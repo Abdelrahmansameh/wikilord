@@ -1,5 +1,5 @@
 {
-  "dryRun": false,
+  "dryRun": true,
   "myUserId": "",
   "timing": {
     "targetRemainingMs": 11000,
@@ -83,7 +83,7 @@
     "backoffMinutes": 10
   },
   "recycle": {
-    "enabled": true,
+    "enabled": false,
     "afterPackOpen": true,
     "sweepExisting": true,
     "sweepMinutes": 30,

@@ -10,12 +10,20 @@ Autonomous helper for [wiki-masters.com](https://www.wiki-masters.com): snipes a
 
 ## Setup
 
-Needs Node 20+. No dependencies to install.
+Needs Node 20+. Nothing to install and no files to create.
 
-1. `cp config.example.json config.json` and adjust the rules and limits.
-2. Log in to WikiMasters in a **separate Incognito window**. In DevTools → Network, open any request to `www.wiki-masters.com` and copy the `cookie` request header.
-3. Create `.env` (see `.env.example`) with `COOKIE=<that value>` and `SUPABASE_ANON_KEY=<the public anon key the site sends as the apikey header>`.
-4. Do not log out of that Incognito login afterwards; the bot renews its own session.
+1. Start the bot: `npm run live` (Windows: double-click `start-bot.bat`).
+2. Open **http://localhost:8787**. With no login yet, it opens on the **Connect** tab:
+   1. In a **private / Incognito window**, log in to wiki-masters.com.
+   2. Press F12, open the **Console**, type `copy(document.cookie)` and press Enter.
+   3. Paste into the box on the Connect tab and click **Connect**.
+   4. Close the private window. Do not click "Log out" there.
+
+Your rules live in `config.json` (created from `config.example.json` on first run; edit it or use the dashboard).
+
+The bot checks the login, stores it locally in `.env`, finds the site's public API key by itself, and keeps the session renewed. If the login is ever rejected, a banner on the dashboard asks you to paste a new one.
+
+If the console command does not work in your browser, copy the `cookie` request header from DevTools → Network instead (the Connect tab explains this).
 
 ```bash
 npm start            # dry run: logs what it would do, changes nothing
@@ -24,8 +32,12 @@ npm run explain      # what the current rules would do right now (read-only)
 npm run check-config # validate config.json
 ```
 
+## Going live
+
+The example config is safe by default: `dryRun` is `true` (the bot only logs what it would do) and recycling is off. When the rules look right, use **Settings → Force dry-run** (or set `"dryRun": false`), turn on **Recycle rules → enabled** if you want recycling, and restart.
+
 ## Notes
 
-- Recycling is permanent. It is off in the example config's dry-run mode and only acts with `--live`.
+- Recycling is permanent. It is off in the example config and only acts when live.
 - The bot never tries to bypass human verification; if the site asks for it, pack opening pauses for an hour.
 - Use it only where the site's rules allow automation. Keep `.env` and `.session.json` private.

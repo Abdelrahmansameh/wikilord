@@ -6,6 +6,10 @@ const ENV_FILE = new URL('../.env', import.meta.url);
 const UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
 
+const SUPABASE = 'https://cyrxjeppjqsxxjayfrur.supabase.co';
+const COOKIE_BASE = 'sb-cyrxjeppjqsxxjayfrur-auth-token';
+const CHUNK = 3180;
+
 function parseCookieHeader(str) {
   const jar = new Map();
   for (const part of str.split(';')) {
@@ -24,25 +28,104 @@ function loadJar() {
     const m = fs.readFileSync(ENV_FILE, 'utf8').match(/^COOKIE=(.*)$/m);
     if (m && m[1].trim()) return parseCookieHeader(m[1].trim());
   } catch {}
-  throw new Error('No session. Create .env with COOKIE=<cookie header> (see .env.example).');
+  return new Map(); // no login yet: the dashboard's Connect tab asks for it
 }
 
-const SUPABASE = 'https://cyrxjeppjqsxxjayfrur.supabase.co';
-const COOKIE_BASE = 'sb-cyrxjeppjqsxxjayfrur-auth-token';
-const CHUNK = 3180;
+/** Accept what people actually paste: a bare value, "cookie: ...", quoted, or spread over lines. */
+export function normalizeCookieInput(input) {
+  return String(input ?? '')
+    .trim()
+    .replace(/^cookie:\s*/i, '')
+    .replace(/^["']|["']$/g, '')
+    .replace(/\s*[\r\n]+\s*/g, ' ')
+    .trim();
+}
+
+export const cookieLooksRight = (str) => /sb-[a-z0-9]+-auth-token/i.test(str);
+
+/** Set KEY=value in .env, keeping every other line. */
+function saveEnv(pairs) {
+  let lines = [];
+  try {
+    lines = fs.readFileSync(ENV_FILE, 'utf8').split(/\r?\n/).filter((l) => l.trim() !== '');
+  } catch {}
+  for (const [k, v] of Object.entries(pairs)) {
+    const i = lines.findIndex((l) => l.startsWith(k + '='));
+    if (i >= 0) lines[i] = `${k}=${v}`;
+    else lines.push(`${k}=${v}`);
+  }
+  fs.writeFileSync(ENV_FILE, lines.join('\n') + '\n');
+}
+
+/** The site's public Supabase "anon" key ships in its JavaScript; find it so nobody has to. */
+export async function discoverAnonKey() {
+  const get = (p) => fetch(BASE + p, { headers: { 'user-agent': UA } }).then((r) => r.text());
+  const html = await get('/login');
+  const srcs = [...new Set([...html.matchAll(/\/_next\/static\/[^"' <>]+\.js[^"' <>]*/g)].map((m) => m[0]))];
+  for (const p of srcs) {
+    const js = await get(p).catch(() => '');
+    for (const m of js.matchAll(/eyJ[\w-]{10,}\.eyJ[\w-]{10,}\.[\w-]{10,}/g)) {
+      try {
+        const payload = JSON.parse(Buffer.from(m[0].split('.')[1], 'base64url').toString('utf8'));
+        if (payload.role === 'anon' && payload.iss === 'supabase') return m[0];
+      } catch {}
+    }
+  }
+  throw new Error('could not find the site API key automatically');
+}
 
 function anonKey() {
   const m = fs.readFileSync(ENV_FILE, 'utf8').match(/^SUPABASE_ANON_KEY=(.*)$/m);
-  if (!m) throw new Error('SUPABASE_ANON_KEY missing in .env');
+  if (!m) throw new Error('SUPABASE_ANON_KEY missing (it is fetched automatically on start)');
   return m[1].trim();
 }
 
 const randomLeftSec = () => 300 + Math.random() * 2400; // renew 15-55 min after issue, never at a fixed time
 
 export class Session {
-  constructor() {
-    this.jar = loadJar();
+  /** `jar` given = in-memory session that never touches disk (used to test a pasted cookie). */
+  constructor(jar) {
+    this.noPersist = Boolean(jar);
+    this.jar = jar ?? loadJar();
     this.renewWhenLeftSec = randomLeftSec();
+    this._waiters = [];
+  }
+
+  hasCookie() {
+    return this.jar.size > 0;
+  }
+
+  /** Make sure the public API key is known (fetched from the site once, then kept in .env). */
+  async init() {
+    try {
+      anonKey();
+    } catch {
+      saveEnv({ SUPABASE_ANON_KEY: await discoverAnonKey() });
+    }
+  }
+
+  /** Check a pasted cookie against the site without saving anything. */
+  static async test(cookieStr) {
+    const t = new Session(parseCookieHeader(cookieStr));
+    t.renewWhenLeftSec = -Infinity; // a test must never rotate the real refresh token
+    const r = await t.request('GET', '/api/wikibidous');
+    return { ok: r.status === 200 && typeof r.json?.balance === 'number', status: r.status, balance: r.json?.balance };
+  }
+
+  /** Replace the login (from the dashboard): saved to .env, and the old rotated session is dropped. */
+  replaceCookie(cookieStr) {
+    saveEnv({ COOKIE: cookieStr });
+    try {
+      fs.unlinkSync(SESSION_FILE);
+    } catch {}
+    this.jar = parseCookieHeader(cookieStr);
+    this._diskMtime = 0;
+    this.renewWhenLeftSec = randomLeftSec();
+    this._waiters.splice(0).forEach((f) => f());
+  }
+
+  waitForCookie() {
+    return new Promise((resolve) => this._waiters.push(resolve));
   }
 
   /** Reassemble the Supabase session object stored across the chunked auth cookie. */
@@ -57,7 +140,11 @@ export class Session {
       if (raw.startsWith('base64-')) raw = Buffer.from(raw.slice(7), 'base64url').toString('utf8');
       return JSON.parse(decodeURIComponent(raw));
     } catch {
-      try { return JSON.parse(raw); } catch { return null; }
+      try {
+        return JSON.parse(raw);
+      } catch {
+        return null;
+      }
     }
   }
 
@@ -65,12 +152,14 @@ export class Session {
     for (const k of [...this.jar.keys()]) if (k === COOKIE_BASE || k.startsWith(COOKIE_BASE + '.')) this.jar.delete(k);
     const enc = 'base64-' + Buffer.from(JSON.stringify(sess), 'utf8').toString('base64url');
     for (let i = 0; i * CHUNK < enc.length; i++) this.jar.set(`${COOKIE_BASE}.${i}`, enc.slice(i * CHUNK, (i + 1) * CHUNK));
+    if (this.noPersist) return;
     fs.writeFileSync(SESSION_FILE, JSON.stringify(Object.fromEntries(this.jar)));
     this._diskMtime = fs.statSync(SESSION_FILE).mtimeMs;
   }
 
   /** Pick up tokens rotated by another process sharing .session.json. */
   syncFromDisk() {
+    if (this.noPersist) return;
     try {
       const m = fs.statSync(SESSION_FILE).mtimeMs;
       if (m > (this._diskMtime ?? 0)) {
@@ -95,10 +184,13 @@ export class Session {
         body: JSON.stringify({ refresh_token: sess.refresh_token }),
       });
       const j = await res.json().catch(() => ({}));
-      if (!res.ok || !j.access_token) throw new Error(`token refresh failed HTTP ${res.status}: ${JSON.stringify(j).slice(0, 160)}. Copy a fresh cookie into .env and delete .session.json.`);
+      if (!res.ok || !j.access_token) {
+        throw new Error(`token refresh failed (HTTP ${res.status}). Paste a fresh cookie on the dashboard's Connect tab.`);
+      }
       this.writeAuth(j);
       this.renewWhenLeftSec = randomLeftSec();
-      (this.onLog ?? ((m) => console.log(new Date().toISOString().slice(11, 23), m)))(`session refreshed (had ${Math.round(left / 60)} min left), valid for ${Math.round(j.expires_in / 60)} min, next renewal ~${Math.round((j.expires_in - this.renewWhenLeftSec) / 60)} min from now`);
+      const msg = `session refreshed (had ${Math.round(left / 60)} min left), valid for ${Math.round(j.expires_in / 60)} min, next renewal ~${Math.round((j.expires_in - this.renewWhenLeftSec) / 60)} min from now`;
+      (this.onLog ?? ((m) => console.log(new Date().toISOString().slice(11, 23), m)))(msg);
     })().finally(() => (this._refreshing = null));
     return this._refreshing;
   }
@@ -123,7 +215,9 @@ export class Session {
     });
     const text = await res.text();
     let json;
-    try { json = JSON.parse(text); } catch {}
+    try {
+      json = JSON.parse(text);
+    } catch {}
     return { status: res.status, json, text };
   }
 
@@ -143,7 +237,7 @@ export class Session {
       if (expired) this.jar.delete(name);
       else this.jar.set(name, value);
     }
-    fs.writeFileSync(SESSION_FILE, JSON.stringify(Object.fromEntries(this.jar)));
+    if (!this.noPersist) fs.writeFileSync(SESSION_FILE, JSON.stringify(Object.fromEntries(this.jar)));
   }
 
   /** Returns { status, json, text, date, t0, t1 } with local ms timestamps around the request. */

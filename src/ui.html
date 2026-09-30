@@ -55,6 +55,10 @@
   #savebar { position: fixed; left: 0; right: 0; bottom: 0; background: var(--panel); border-top: 1px solid var(--line); padding: 10px 20px; display: none; gap: 12px; align-items: center; }
   #savebar.show { display: flex; }
   #savemsg { flex: 1; } .err { color: var(--bad); } .good { color: var(--ok); }
+  .banner { display: flex; gap: 12px; align-items: center; justify-content: space-between; background: var(--bad); color: #fff; padding: 10px 14px; border-radius: 10px; margin-bottom: 14px; flex-wrap: wrap; }
+  textarea { width: 100%; font: 12px/1.4 ui-monospace, Consolas, monospace; padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--text); }
+  ol.steps { padding-left: 20px; margin: 0 0 14px; } ol.steps li { margin-bottom: 8px; }
+  code.cmd { background: var(--chip); padding: 2px 8px; border-radius: 6px; font-family: ui-monospace, Consolas, monospace; }
   @media (max-width: 640px) { .row { grid-template-columns: 1fr; } }
 </style>
 </head>
@@ -149,6 +153,7 @@ function renderDashboard() {
     h('td', {}, p.title ?? p.id.slice(0, 8)), h('td', {}, h('span', { class: 'chip' }, p.rarity ?? '?')), h('td', {}, p.amount), h('td', {}, p.rule),
     h('td', {}, fmtSec(p.fireInSec)), h('td', {}, clock(p.endAt))));
   return h('div', {},
+    !s.connected && h('div', { class: 'banner' }, h('span', {}, '⚠ ' + (s.sessionProblem ?? 'Not connected.')), h('button', { class: 'primary', onclick: () => { tab = 'connect'; draw(); } }, 'Connect now')),
     h('div', { class: 'grid' },
       stat('Balance', s.balance), stat('Spent today', `${s.spentToday} / ${s.dailySpendCap}`),
       stat('Bids placed', s.stats.bidsOk, s.stats.bidsFailed ? `${s.stats.bidsFailed} failed` : ''),
@@ -233,8 +238,43 @@ function renderSettings() {
   }))));
 }
 
+/* ---------- connect (login) ---------- */
+function renderConnect() {
+  const status = h('p', { id: 'connectmsg', class: 'hint' });
+  const box = h('textarea', { id: 'cookiebox', rows: '5', placeholder: 'Paste here (Ctrl+V)…', spellcheck: 'false' });
+  const btn = h('button', { class: 'primary', onclick: async () => {
+    status.className = 'hint'; status.textContent = 'Checking with WikiMasters…';
+    btn.disabled = true;
+    const r = await api('/api/cookie', { method: 'POST', body: JSON.stringify({ cookie: box.value }) });
+    btn.disabled = false;
+    if (r.ok) { status.className = 'hint good'; status.textContent = `Connected. Balance: ${r.data.balance}. The bot is running with this login now.`; box.value = ''; poll(); }
+    else { status.className = 'hint err'; status.textContent = r.data.error ?? 'Something went wrong.'; }
+  } }, 'Connect');
+  const code = h('code', { class: 'cmd' }, 'copy(document.cookie)');
+  const connected = state?.connected;
+  return h('div', {},
+    h('section', {},
+      h('h2', {}, connected ? 'You are connected' : 'Connect your WikiMasters login'),
+      connected
+        ? h('p', { class: 'hint' }, 'The bot is logged in and renews its own session. You only need to come back here if it ever says the login was rejected.')
+        : h('p', { class: 'hint err' }, state?.sessionProblem ?? 'The bot needs your login to work.')),
+    h('section', {},
+      h('h2', {}, connected ? 'Replace the login' : 'How to connect (about 1 minute)'),
+      h('ol', { class: 'steps' },
+        h('li', {}, 'Open a ', h('b', {}, 'private / Incognito window'), ' (Ctrl+Shift+N in Chrome), go to ', h('b', {}, 'wiki-masters.com'), ' and log in. Using a private window gives the bot its own login, so it never clashes with your normal browser.'),
+        h('li', {}, 'Press ', h('b', {}, 'F12'), ' and click the ', h('b', {}, 'Console'), ' tab.'),
+        h('li', {}, 'Type this and press Enter: ', code, ' ', h('button', { onclick: () => navigator.clipboard?.writeText('copy(document.cookie)') }, 'Copy command'), h('br', {}), h('small', {}, 'It prints "undefined". That is normal: your login is now on the clipboard.')),
+        h('li', {}, 'Come back to this page, paste it in the box below, and click ', h('b', {}, 'Connect'), '.'),
+        h('li', {}, 'You can close the private window. ', h('b', {}, 'Do not click "Log out"'), ' there, because that would end the bot\'s login.')),
+      box, h('div', { style: 'margin-top:10px;display:flex;gap:10px;align-items:center' }, btn), status),
+    h('section', {},
+      h('h2', {}, 'If Connect says the cookie is wrong'),
+      h('p', { class: 'hint' }, 'Some browsers hide the login from the console. Use this instead: with DevTools open (F12), click the ', h('b', {}, 'Network'), ' tab, reload the page, click any request to wiki-masters.com, open ', h('b', {}, 'Headers'), ', find ', h('b', {}, 'cookie'), ' under Request Headers, and copy its value.'),
+      h('p', { class: 'hint' }, 'The cookie is like a password for your account. It is stored only on this computer (in the .env file), never sent anywhere except wiki-masters.com.')));
+}
+
 /* ---------- shell ---------- */
-const TABS = [['dashboard', 'Dashboard'], ['bid', 'Bid rules'], ['recycle', 'Recycle rules'], ['settings', 'Settings']];
+const TABS = [['dashboard', 'Dashboard'], ['bid', 'Bid rules'], ['recycle', 'Recycle rules'], ['settings', 'Settings'], ['connect', 'Connect']];
 function drawTabs() {
   $('#tabs').replaceChildren(...TABS.map(([id, label]) => h('button', { class: tab === id ? 'on' : '', onclick: () => { tab = id; draw(); } }, label)));
 }
@@ -242,6 +282,7 @@ function draw() { drawTabs(); drawView(); }
 function drawView() {
   const v = $('#view');
   if (tab === 'dashboard') { v.replaceChildren(renderDashboard()); const l = $('#log'); if (l) l.scrollTop = l.scrollHeight; }
+  else if (tab === 'connect') v.replaceChildren(renderConnect());
   else if (!cfg) v.replaceChildren(h('p', { class: 'empty' }, 'Loading settings…'));
   else v.replaceChildren(tab === 'bid' ? renderRules('bid') : tab === 'recycle' ? renderRules('recycle') : renderSettings());
 }
@@ -250,6 +291,7 @@ async function poll() {
   const r = await api('/api/state').catch(() => null);
   if (r?.ok) {
     state = r.data;
+    if (!state.connected && !window.__jumped && !state.sessionProblem?.includes('rejected')) { window.__jumped = true; tab = 'connect'; draw(); }
     const m = $('#mode');
     m.textContent = state.paused ? 'PAUSED' : state.mode === 'live' ? 'LIVE' : 'DRY-RUN';
     m.className = 'badge ' + (state.paused ? 'paused' : state.mode === 'live' ? 'live' : 'dry');

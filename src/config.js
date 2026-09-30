@@ -79,6 +79,9 @@ export function validate(cfg) {
 }
 
 export function loadConfig(path = CONFIG_PATH) {
+  // First run: create the personal config from the shipped example.
+  const example = new URL('../config.example.json', import.meta.url);
+  if (!fs.existsSync(path) && fs.existsSync(example)) fs.copyFileSync(example, path);
   let cfg;
   try {
     cfg = JSON.parse(fs.readFileSync(path, 'utf8'));

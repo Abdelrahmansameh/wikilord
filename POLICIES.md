@@ -71,4 +71,4 @@ Examples:
 
 ## Session
 
-The bot keeps itself logged in and renews the session at a random point in each hour. Put your cookie in `.env` once (see `.env.example`); use a separate Incognito login for it, and do not log out of that login.
+Log in through the dashboard's **Connect** tab (steps are on the page). The bot keeps itself logged in and renews the session at a random point in each hour. Use a private/Incognito login for it and do not log out of that login. If the site rejects the login, the dashboard shows a banner; paste a fresh cookie on the Connect tab.

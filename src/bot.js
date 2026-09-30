@@ -20,6 +20,7 @@ const plans = new Map(); // auctionId -> { endAt, timer, rule, amount }
 const recentBids = []; // local timestamps of sent bids
 let clock = { offsetMs: 0, rttMs: 300, uncertaintyMs: 1000 };
 let balance = null;
+let sessionProblem = null;
 let wishlist = new Set();
 let wishlistTitles = [];
 let spentToday = { day: '', amount: 0 };
@@ -44,9 +45,11 @@ const jitter = () => (Math.random() * 2 - 1) * T.jitterMs;
 async function fetchPage(page) {
   const r = await session.request('GET', `/api/marketplace?page=${page}&limit=50&sort=ending_soon`);
   if (r.status === 401 || r.status === 403 || (r.status >= 300 && r.status < 400)) {
-    throw new Error(`Session rejected (HTTP ${r.status}${r.location ? ' -> ' + r.location : ''}). Refresh COOKIE in .env and delete .session.json.`);
+    sessionProblem = 'The site rejected your login. Paste a fresh cookie on the Connect tab.';
+    throw new Error(`Session rejected (HTTP ${r.status}${r.location ? ' -> ' + r.location : ''}). Paste a fresh cookie on the dashboard Connect tab.`);
   }
   if (r.status !== 200 || !r.json?.auctions) throw new Error(`List failed: HTTP ${r.status} ${r.text.slice(0, 200)}`);
+  sessionProblem = null;
   return r.json;
 }
 
@@ -229,21 +232,20 @@ async function poll(withWishlist = true) {
 
 async function main() {
   log(`mode: ${DRY ? 'DRY-RUN (pass --live to place real bids)' : 'LIVE'}`);
-  clock = await calibrate(session);
-  log(`clock: offset ${clock.offsetMs.toFixed(0)}ms (±${clock.uncertaintyMs.toFixed(0)}), rtt ${clock.rttMs}ms, ${clock.samples} samples`);
-  await refreshBalance().catch((e) => log('balance:', e.message));
-  await refreshWishlist();
-  await poll();
-  if (ONCE) return process.exit(0);
-  watchConfig(cfg, log);
-  startPacks({ session, cfg, log, dry: DRY, getWishlist: () => wishlist, control, stats });
-  if (cfg.ui?.enabled !== false) {
+  if (!ONCE && cfg.ui?.enabled !== false) {
     startUI({
       port: cfg.ui?.port ?? 8787,
       control,
       log,
+      session,
+      onConnected: () => {
+        sessionProblem = null;
+        if (!cfg.myUserId) cfg.myUserId = session.readAuth()?.user?.id ?? '';
+      },
       getState: () => ({
         mode: DRY ? 'dry-run' : 'live',
+        connected: session.hasCookie() && !sessionProblem,
+        sessionProblem: session.hasCookie() ? sessionProblem : 'No login yet. Use the Connect tab.',
         paused: control.paused,
         uptimeSec: Math.round((Date.now() - startedAt) / 1000),
         balance,
@@ -263,9 +265,25 @@ async function main() {
       }),
     });
   }
+  if (!session.hasCookie()) {
+    log(`No login yet. Open http://localhost:${cfg.ui?.port ?? 8787} and follow the Connect tab.`);
+    if (ONCE) process.exit(1);
+    await session.waitForCookie();
+    log('login received, starting');
+  }
+  await session.init();
+  if (!cfg.myUserId) cfg.myUserId = session.readAuth()?.user?.id ?? '';
+  clock = await calibrate(session);
+  log(`clock: offset ${clock.offsetMs.toFixed(0)}ms (±${clock.uncertaintyMs.toFixed(0)}), rtt ${clock.rttMs}ms, ${clock.samples} samples`);
+  await refreshBalance().catch((e) => log('balance:', e.message));
+  await refreshWishlist();
+  await poll();
+  if (ONCE) return process.exit(0);
+  watchConfig(cfg, log);
+  startPacks({ session, cfg, log, dry: DRY, getWishlist: () => wishlist, control, stats });
   setInterval(() => refreshBalance().catch(() => {}), 5 * 60_000);
   setInterval(() => refreshWishlist().catch((e) => log(e.message)), 15_000);
-  setInterval(() => poll().catch((e) => log('poll error:', e.message)), T.pollSeconds * 1000);
+  setInterval(() => poll().catch((e) => { log('poll error:', e.message); if (/token refresh failed/.test(e.message)) sessionProblem = e.message; }), T.pollSeconds * 1000);
   setInterval(async () => (clock = await calibrate(session, { durationMs: 8000 }), log(`recalibrated: offset ${clock.offsetMs.toFixed(0)}ms rtt ${clock.rttMs}ms`)), T.recalibrateMinutes * 60_000);
 }
 

@@ -1,11 +1,12 @@
 import http from 'node:http';
 import fs from 'node:fs';
 import { CONFIG_PATH, loadConfig, validate } from './config.js';
+import { Session, cookieLooksRight, normalizeCookieInput } from './http.js';
 
 const PAGE = new URL('./ui.html', import.meta.url);
 
 /** Local-only dashboard. Listens on 127.0.0.1 and rejects cross-site requests. */
-export function startUI({ port, getState, control, log }) {
+export function startUI({ port, getState, control, log, session, onConnected }) {
   const send = (res, code, body, type = 'application/json') => {
     res.writeHead(code, { 'content-type': type, 'cache-control': 'no-store' });
     res.end(typeof body === 'string' || Buffer.isBuffer(body) ? body : JSON.stringify(body));
@@ -40,6 +41,22 @@ export function startUI({ port, getState, control, log }) {
         loadConfig(); // sanity: the file we just wrote must load
         log('config saved from the dashboard');
         return send(res, 200, { ok: true });
+      }
+
+      if (req.method === 'POST' && url.pathname === '/api/cookie') {
+        const cookie = normalizeCookieInput(JSON.parse((await readBody(req)) || '{}').cookie);
+        if (!cookie) return send(res, 400, { error: 'Nothing to connect: paste the cookie text first.' });
+        if (!cookieLooksRight(cookie)) {
+          return send(res, 400, { error: "That doesn't look like the WikiMasters login cookie. It should contain something like sb-...-auth-token. Make sure you ran the command on wiki-masters.com while logged in." });
+        }
+        const t = await Session.test(cookie);
+        if (!t.ok) {
+          return send(res, 400, { error: `WikiMasters did not accept that cookie (HTTP ${t.status}). Log in again in a private window and copy it fresh.` });
+        }
+        session.replaceCookie(cookie);
+        onConnected?.();
+        log(`connected from the dashboard (balance ${t.balance})`);
+        return send(res, 200, { ok: true, balance: t.balance });
       }
 
       if (req.method === 'POST' && url.pathname === '/api/pause') {
