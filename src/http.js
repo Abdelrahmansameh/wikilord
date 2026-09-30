@@ -31,12 +31,23 @@ function loadJar() {
   return new Map(); // no login yet: the dashboard's Connect tab asks for it
 }
 
-/** Accept what people actually paste: a bare value, "cookie: ...", quoted, or spread over lines. */
+/**
+ * Accept what people actually paste: a bare cookie value, "cookie: ...", a whole
+ * DevTools "Copy as cURL (bash)" command, or a block of copied request headers.
+ */
 export function normalizeCookieInput(input) {
-  return String(input ?? '')
+  let s = String(input ?? '').trim();
+  const curl =
+    s.match(/(?:-H|--header)\s+\$?(['"])\s*cookie:\s*([\s\S]*?)\1/i) || s.match(/(?:\s-b|--cookie)\s+\$?(['"])([\s\S]*?)\1/i);
+  if (curl) s = curl[2];
+  else if (/[\r\n]/.test(s)) {
+    const line = s.match(/^\s*cookie:\s*(.+)$/im);
+    if (line) s = line[1];
+  }
+  return s
     .trim()
-    .replace(/^cookie:\s*/i, '')
     .replace(/^["']|["']$/g, '')
+    .replace(/^cookie:\s*/i, '')
     .replace(/\s*[\r\n]+\s*/g, ' ')
     .trim();
 }

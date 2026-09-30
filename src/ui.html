@@ -250,7 +250,6 @@ function renderConnect() {
     if (r.ok) { status.className = 'hint good'; status.textContent = `Connected. Balance: ${r.data.balance}. The bot is running with this login now.`; box.value = ''; poll(); }
     else { status.className = 'hint err'; status.textContent = r.data.error ?? 'Something went wrong.'; }
   } }, 'Connect');
-  const code = h('code', { class: 'cmd' }, 'copy(document.cookie)');
   const connected = state?.connected;
   return h('div', {},
     h('section', {},
@@ -261,16 +260,17 @@ function renderConnect() {
     h('section', {},
       h('h2', {}, connected ? 'Replace the login' : 'How to connect (about 1 minute)'),
       h('ol', { class: 'steps' },
-        h('li', {}, 'Open a ', h('b', {}, 'private / Incognito window'), ' (Ctrl+Shift+N in Chrome), go to ', h('b', {}, 'wiki-masters.com'), ' and log in. Using a private window gives the bot its own login, so it never clashes with your normal browser.'),
-        h('li', {}, 'Press ', h('b', {}, 'F12'), ' and click the ', h('b', {}, 'Console'), ' tab.'),
-        h('li', {}, 'Type this and press Enter: ', code, ' ', h('button', { onclick: () => navigator.clipboard?.writeText('copy(document.cookie)') }, 'Copy command'), h('br', {}), h('small', {}, 'It prints "undefined". That is normal: your login is now on the clipboard.')),
-        h('li', {}, 'Come back to this page, paste it in the box below, and click ', h('b', {}, 'Connect'), '.'),
-        h('li', {}, 'You can close the private window. ', h('b', {}, 'Do not click "Log out"'), ' there, because that would end the bot\'s login.')),
+        h('li', {}, 'Open a ', h('b', {}, 'private / Incognito window'), ' (Ctrl+Shift+N in Chrome), go to ', h('b', {}, 'wiki-masters.com/marketplace'), ' and log in. A private window gives the bot its own login, so it never clashes with your normal browser.'),
+        h('li', {}, 'Press ', h('b', {}, 'F12'), ' to open DevTools and click the ', h('b', {}, 'Network'), ' tab. Then press ', h('b', {}, 'F5'), ' to reload the page.'),
+        h('li', {}, 'In the list, ', h('b', {}, 'right-click the first row'), ' (named ', h('b', {}, 'marketplace'), ') and choose ', h('b', {}, 'Copy → Copy as cURL (bash)'), '.', h('br', {}), h('small', {}, 'If the list is empty, reload again with the Network tab still open. Any request to wiki-masters.com works.')),
+        h('li', {}, 'Paste it in the box below (Ctrl+V) and click ', h('b', {}, 'Connect'), '. It is a long block of text, and that is fine: the bot finds your login inside it.'),
+        h('li', {}, 'Close the private window. ', h('b', {}, 'Do not click "Log out"'), ' there, because that would end the bot\'s login.')),
       box, h('div', { style: 'margin-top:10px;display:flex;gap:10px;align-items:center' }, btn), status),
     h('section', {},
-      h('h2', {}, 'If Connect says the cookie is wrong'),
-      h('p', { class: 'hint' }, 'Some browsers hide the login from the console. Use this instead: with DevTools open (F12), click the ', h('b', {}, 'Network'), ' tab, reload the page, click any request to wiki-masters.com, open ', h('b', {}, 'Headers'), ', find ', h('b', {}, 'cookie'), ' under Request Headers, and copy its value.'),
-      h('p', { class: 'hint' }, 'The cookie is like a password for your account. It is stored only on this computer (in the .env file), never sent anywhere except wiki-masters.com.')));
+      h('h2', {}, 'Other ways to paste it'),
+      h('p', { class: 'hint' }, 'The box also accepts just the cookie value: in DevTools → Network, click a request, open ', h('b', {}, 'Headers'), ', find ', h('b', {}, 'cookie'), ' under Request Headers and copy its value. Or a whole block of copied request headers.'),
+      h('p', { class: 'hint' }, 'Why not a password? The site protects its login with a bot check, so the bot cannot sign in for you, and it will not try to get around that.'),
+      h('p', { class: 'hint' }, 'The cookie is like a password for your account. It is stored only on this computer (in the .env file) and is only ever sent to wiki-masters.com.')));
 }
 
 /* ---------- shell ---------- */

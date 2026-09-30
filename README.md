@@ -14,16 +14,13 @@ Needs Node 20+. Nothing to install and no files to create.
 
 1. Start the bot: `npm run live` (Windows: double-click `start-bot.bat`).
 2. Open **http://localhost:8787**. With no login yet, it opens on the **Connect** tab:
-   1. In a **private / Incognito window**, log in to wiki-masters.com.
-   2. Press F12, open the **Console**, type `copy(document.cookie)` and press Enter.
-   3. Paste into the box on the Connect tab and click **Connect**.
-   4. Close the private window. Do not click "Log out" there.
+   1. In a **private / Incognito window**, log in to wiki-masters.com/marketplace.
+   2. Press F12, open the **Network** tab, press F5.
+   3. Right-click the first request → **Copy → Copy as cURL (bash)**.
+   4. Paste it into the box on the Connect tab and click **Connect** (the bot finds the login inside it).
+   5. Close the private window. Do not click "Log out" there.
 
-Your rules live in `config.json` (created from `config.example.json` on first run; edit it or use the dashboard).
-
-The bot checks the login, stores it locally in `.env`, finds the site's public API key by itself, and keeps the session renewed. If the login is ever rejected, a banner on the dashboard asks you to paste a new one.
-
-If the console command does not work in your browser, copy the `cookie` request header from DevTools → Network instead (the Connect tab explains this).
+The bot checks the login, stores it locally in `.env`, finds the site's public API key by itself, and keeps the session renewed. If the login is ever rejected, a banner on the dashboard asks you to paste a new one. (The site's login is protected by a bot check, so the bot cannot sign in with a password; it never tries to bypass that.)
 
 ```bash
 npm start            # dry run: logs what it would do, changes nothing
