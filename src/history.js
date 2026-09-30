@@ -36,6 +36,23 @@ export function wonCardIds() {
   return new Set(readAll().filter((e) => e.type === 'won' && e.cardId).map((e) => e.cardId));
 }
 
+/**
+ * Titles of every card the bot has successfully bid on (bids.jsonl goes back to before the card history
+ * existed). Used as extra protection so early wins are never sold or recycled either.
+ */
+export function bidOnTitles() {
+  try {
+    return new Set(
+      fs.readFileSync(new URL('../bids.jsonl', import.meta.url), 'utf8').split(/\r?\n/).filter(Boolean)
+        .map((l) => { try { return JSON.parse(l); } catch { return null; } })
+        .filter((r) => r && r.event === undefined && !r.dry && r.status === 200 && r.title)
+        .map((r) => r.title),
+    );
+  } catch {
+    return new Set();
+  }
+}
+
 /** Newest first, optionally filtered by type and a text search on the title. */
 export function readCardEvents({ limit = 500, type, q } = {}) {
   let rows = readAll();

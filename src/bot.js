@@ -4,7 +4,7 @@ import { calibrate } from './clock.js';
 import { auctionFacts, bidRuleMatch, decide, describe, matches, plain } from './rules.js';
 import { startPacks } from './packs.js';
 import { startSelling } from './sell.js';
-import { cardEvent, wonCardIds } from './history.js';
+import { bidOnTitles, cardEvent, wonCardIds } from './history.js';
 import { loadConfig, watchConfig } from './config.js';
 import { startUI } from './ui.js';
 
@@ -61,8 +61,10 @@ function bidLatencyMs() {
 
 /** Cards the bot won by bidding (remembered across restarts), plus why a card must never be sold or recycled. */
 const wonIds = wonCardIds();
+const bidTitles = bidOnTitles(); // older wins, from before the card history existed
 const protectedBy = (facts) => {
   if (wonIds.has(facts.cardId)) return 'bought by a bid rule';
+  if (bidTitles.has(facts.title)) return 'the bot bid on this card';
   const rule = bidRuleMatch(cfg, facts, wishlist);
   return rule ? `matches bid rule "${rule}"` : null;
 };
@@ -436,6 +438,7 @@ async function placeBid(a, decision, fireAt, { counter = false } = {}) {
   }
   ok ? stats.bidsOk++ : stats.bidsFailed++;
   if (ok) recentBidRtts.push({ at: Date.now(), rtt: r.t1 - r.t0 });
+  if (ok && a.card?.wikipedia_title) bidTitles.add(a.card.wikipedia_title);
   if (ok) {
     pendingBids.set(a.id, { title: a.card?.wikipedia_title, amount: decision.amount });
     watchAuction(a, decision.amount, decision.rule).catch(() => pendingBids.delete(a.id));

@@ -1,7 +1,8 @@
 // Shows what the current config.json policies would do right now. Read-only.
 import { Session } from './http.js';
 import { loadConfig } from './config.js';
-import { auctionFacts, decide, decideRecycle, matches, ownedFacts } from './rules.js';
+import { auctionFacts, bidRuleMatch, decide, decideRecycle, matches, ownedFacts } from './rules.js';
+import { bidOnTitles, wonCardIds } from './history.js';
 
 const cfg = loadConfig();
 const session = new Session();
@@ -33,9 +34,17 @@ for (let p = 0; p < 50; p++) {
   if (p === 0) pending = new Set(r.json.pendingTradeCardIds ?? []);
   owned.push(...r.json.collection);
 }
+const won = wonCardIds();
+const bidTitles = bidOnTitles();
 const dec = owned.map((e) => {
   if (pending.has(e.id) || pending.has(e.card_id)) return { e, action: 'keep', rule: 'pending trade (built in)' };
-  return { e, ...decideRecycle(cfg.recycle, ownedFacts({ card: e.card, cardId: e.card_id, shiny: e.is_shiny, starred: e.starred, tagged: (e.tags ?? []).length > 0 }), wishlist) };
+  const facts = ownedFacts({ card: e.card, cardId: e.card_id, shiny: e.is_shiny, starred: e.starred, tagged: (e.tags ?? []).length > 0 });
+  // same protection as the bot: cards it won, and cards matching a bid rule, are never recycled
+  if (won.has(e.card_id)) return { e, action: 'keep', rule: 'protected: won by a bid rule' };
+  if (bidTitles.has(e.card.wikipedia_title)) return { e, action: 'keep', rule: 'protected: the bot bid on it' };
+  const br = bidRuleMatch(cfg, facts, wishlist);
+  if (br) return { e, action: 'keep', rule: `protected: matches bid rule ${br}` };
+  return { e, ...decideRecycle(cfg.recycle, facts, wishlist) };
 });
 const rec = dec.filter((x) => x.action === 'recycle');
 console.log(`\nRECYCLING (${cfg.recycle.enabled ? 'ENABLED' : 'disabled'}): ${owned.length} cards owned, ${rec.length} would be recycled`);
