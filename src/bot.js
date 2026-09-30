@@ -368,7 +368,10 @@ async function watchAuction(a, amount, ruleName) {
 }
 
 /** Schedule a new snipe after being outbid: normal lead time if it is still reachable, else a shorter one. */
+const counterTimers = new Map(); // auction id -> the one queued counter (a newer outbid replaces it)
+
 function queueCounter(cur, decision) {
+  clearTimeout(counterTimers.get(cur.id));
   const oneWay = Math.max(clock.rttMs / 2 + T.extraBidLatencyMs, bidLatencyMs());
   const msLeft = Date.parse(cur.end_at) - serverNow();
   let lead = T.targetRemainingMs;
@@ -380,7 +383,8 @@ function queueCounter(cur, decision) {
   if (msLeft < 1500) return void log(`too late to counter on ${cur.card?.wikipedia_title} (${msLeft}ms left)`);
   wait = Math.max(0, wait) + jitter();
   log(`COUNTER queued: ${describe(cur)} bid=${decision.amount} in ${(Math.max(0, wait) / 1000).toFixed(1)}s (${(lead / 1000).toFixed(1)}s before the end)`);
-  setTimeout(async () => {
+  counterTimers.set(cur.id, setTimeout(async () => {
+    counterTimers.delete(cur.id);
     try {
       const fresh = await getAuction(cur.id);
       if (fresh.status !== 'active' || fresh.current_bidder_id === cfg.myUserId) return; // ended, or already ours
@@ -390,7 +394,7 @@ function queueCounter(cur, decision) {
     } catch (e) {
       log('counter error:', e.message);
     }
-  }, wait);
+  }, wait));
 }
 
 async function placeBid(a, decision, fireAt, { counter = false } = {}) {
