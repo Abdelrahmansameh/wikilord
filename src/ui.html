@@ -209,7 +209,14 @@ function ruleCard(list, i, kind) {
       h('input', { type: 'text', value: r.name ?? '', placeholder: 'Rule name', oninput: (e) => { r.name = e.target.value; markDirty(); } }),
       h('label', {}, h('input', { type: 'checkbox', checked: r.enabled !== false, onchange: (e) => { e.target.checked ? delete r.enabled : (r.enabled = false); refresh(); } }), ' on'),
       h('button', { title: 'Move up (checked earlier)', onclick: () => move(-1) }, '▲'), h('button', { title: 'Move down', onclick: () => move(1) }, '▼'),
-      h('button', { class: 'danger', onclick: () => { if (confirm(`Delete rule "${r.name}"?`)) { list.splice(i, 1); refresh(); } } }, 'Delete')),
+      h('button', { class: 'danger', onclick: (e) => {
+        // Two-click confirm in the page itself: browser confirm() popups are blocked in some browsers.
+        const b = e.currentTarget;
+        if (b.dataset.armed) { list.splice(i, 1); refresh(); return; }
+        b.dataset.armed = '1';
+        b.textContent = 'Click again to delete';
+        setTimeout(() => { if (b.isConnected) { delete b.dataset.armed; b.textContent = 'Delete'; } }, 3000);
+      } }, 'Delete')),
     h('div', { class: 'conds' }, rarity, triEls, NUMS.map(num), TXT.map(txt)),
     h('div', { class: 'actionrow' }, action));
 }
