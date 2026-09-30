@@ -1,0 +1,152 @@
+{
+  "dryRun": false,
+  "myUserId": "",
+  "timing": {
+    "targetRemainingMs": 11000,
+    "extraBidLatencyMs": 150,
+    "jitterMs": 60,
+    "preCheckLeadMs": 5000,
+    "pollSeconds": 45,
+    "horizonMinutes": 90,
+    "maxPages": 6,
+    "recalibrateMinutes": 30
+  },
+  "global": {
+    "skipOwned": true,
+    "reserveBalance": 0,
+    "dailySpendCap": 9,
+    "maxSnipesPerHour": 12,
+    "minGapBetweenBidsMs": 1500
+  },
+  "rules": [
+    {
+      "name": "wishlist",
+      "when": {
+        "wishlist": true
+      },
+      "bid": {
+        "max": 9,
+        "increment": 1
+      }
+    },
+    {
+      "name": "example-bargain-rares",
+      "enabled": false,
+      "when": {
+        "rarity": [
+          "R"
+        ],
+        "minPageviews": 300,
+        "maxCurrentPrice": 10
+      },
+      "bid": {
+        "max": 12,
+        "increment": 1
+      }
+    },
+    {
+      "name": "example-strong-cards",
+      "enabled": false,
+      "when": {
+        "rarity": [
+          "SR",
+          "UR"
+        ],
+        "minAtk": 7000
+      },
+      "bid": {
+        "max": 30,
+        "increment": 1
+      }
+    },
+    {
+      "name": "example-shinies",
+      "enabled": false,
+      "when": {
+        "shiny": true
+      },
+      "bid": {
+        "max": 25,
+        "increment": 1
+      }
+    }
+  ],
+  "packs": {
+    "enabled": true,
+    "checkSeconds": 60,
+    "jitterSeconds": 30,
+    "gapMs": [
+      3500,
+      5000
+    ],
+    "maxPerRun": 10,
+    "backoffMinutes": 10
+  },
+  "recycle": {
+    "enabled": true,
+    "afterPackOpen": true,
+    "sweepExisting": true,
+    "sweepMinutes": 30,
+    "maxPerRun": 60,
+    "gapMs": [
+      3500,
+      5000
+    ],
+    "default": "keep",
+    "rules": [
+      {
+        "name": "keep-wishlist",
+        "when": {
+          "wishlist": true
+        },
+        "action": "keep"
+      },
+      {
+        "name": "keep-shiny",
+        "when": {
+          "shiny": true
+        },
+        "action": "keep"
+      },
+      {
+        "name": "keep-starred",
+        "when": {
+          "starred": true
+        },
+        "action": "keep"
+      },
+      {
+        "name": "keep-tagged",
+        "when": {
+          "tagged": true
+        },
+        "action": "keep"
+      },
+      {
+        "name": "recycle-commons",
+        "when": {
+          "rarity": [
+            "C"
+          ]
+        },
+        "action": "recycle"
+      },
+      {
+        "name": "example-recycle-weak-PC",
+        "enabled": false,
+        "when": {
+          "rarity": [
+            "PC"
+          ],
+          "maxPageviews": 60,
+          "maxAtk": 3000
+        },
+        "action": "recycle"
+      }
+    ]
+  },
+  "ui": {
+    "enabled": true,
+    "port": 8787
+  }
+}

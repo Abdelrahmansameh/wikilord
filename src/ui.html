@@ -1,0 +1,277 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WikiMasters Bot</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #fff; --text: #1b1f24; --muted: #667085; --line: #e3e6eb;
+    --accent: #2563eb; --ok: #16a34a; --warn: #d97706; --bad: #dc2626; --chip: #eef1f6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #0f1216; --panel: #171b21; --text: #e6e9ee; --muted: #8b95a5; --line: #262c35; --accent: #5b8def; --chip: #212833; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { display: flex; align-items: center; gap: 12px; padding: 14px 20px; background: var(--panel); border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+  header h1 { font-size: 16px; margin: 0; flex: 1; }
+  .badge { padding: 2px 10px; border-radius: 99px; font-size: 12px; font-weight: 600; background: var(--chip); }
+  .badge.live { background: var(--ok); color: #fff; } .badge.dry { background: var(--warn); color: #fff; } .badge.paused { background: var(--bad); color: #fff; }
+  button { font: inherit; cursor: pointer; border: 1px solid var(--line); background: var(--panel); color: var(--text); padding: 6px 12px; border-radius: 8px; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.danger { color: var(--bad); }
+  button:disabled { opacity: .5; cursor: default; }
+  nav { display: flex; gap: 4px; padding: 10px 20px 0; border-bottom: 1px solid var(--line); background: var(--panel); overflow-x: auto; }
+  nav button { border: none; border-bottom: 2px solid transparent; border-radius: 0; background: none; padding: 8px 14px; color: var(--muted); }
+  nav button.on { color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }
+  main { max-width: 1100px; margin: 0 auto; padding: 18px 20px 90px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; margin-bottom: 18px; }
+  .stat { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+  .stat b { display: block; font-size: 20px; } .stat span { color: var(--muted); font-size: 12px; }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; margin-bottom: 16px; }
+  h2 { font-size: 14px; margin: 0 0 10px; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); font-size: 13px; }
+  th { color: var(--muted); font-weight: 500; }
+  .empty { color: var(--muted); padding: 6px 0; }
+  .chip { background: var(--chip); border-radius: 6px; padding: 1px 7px; font-size: 12px; }
+  pre#log { margin: 0; max-height: 320px; overflow: auto; font: 12px/1.5 ui-monospace, Consolas, monospace; white-space: pre-wrap; }
+  .rule { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin-bottom: 10px; background: var(--panel); }
+  .rule.off { opacity: .55; }
+  .rule-head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .rule-head input[type=text] { flex: 1; min-width: 140px; }
+  .conds { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 8px 12px; margin-top: 10px; }
+  label.f { display: flex; flex-direction: column; gap: 2px; font-size: 12px; color: var(--muted); }
+  input[type=text], input[type=number], select { font: inherit; padding: 5px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); width: 100%; }
+  .rar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; min-height: 30px; }
+  .rar label { display: flex; align-items: center; gap: 3px; color: var(--text); font-size: 13px; }
+  .actionrow { display: flex; gap: 10px; align-items: end; margin-top: 10px; flex-wrap: wrap; }
+  .actionrow label.f { width: 140px; }
+  .hint { color: var(--muted); font-size: 12px; margin: 0 0 12px; }
+  .row { display: grid; grid-template-columns: minmax(200px, 1fr) 260px; gap: 14px; align-items: center; padding: 7px 0; border-bottom: 1px solid var(--line); }
+  .row small { display: block; color: var(--muted); }
+  .range { display: flex; gap: 6px; }
+  #savebar { position: fixed; left: 0; right: 0; bottom: 0; background: var(--panel); border-top: 1px solid var(--line); padding: 10px 20px; display: none; gap: 12px; align-items: center; }
+  #savebar.show { display: flex; }
+  #savemsg { flex: 1; } .err { color: var(--bad); } .good { color: var(--ok); }
+  @media (max-width: 640px) { .row { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>WikiMasters Bot</h1>
+  <span id="mode" class="badge">…</span>
+  <button id="pause">Pause</button>
+</header>
+<nav id="tabs"></nav>
+<main id="view"></main>
+<div id="savebar"><span id="savemsg"></span><button id="discard">Discard</button><button id="save" class="primary">Save changes</button></div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+const h = (tag, attrs = {}, ...kids) => {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === 'class') e.className = v;
+    else if (k.startsWith('on')) e.addEventListener(k.slice(2), v);
+    else if (k === 'value' || k === 'checked' || k === 'disabled') e[k] = v;
+    else if (v !== false && v != null) e.setAttribute(k, v === true ? '' : v);
+  }
+  for (const k of kids.flat()) if (k != null && k !== false) e.append(k.nodeType ? k : document.createTextNode(k));
+  return e;
+};
+const api = (path, opts = {}) => fetch(path, { ...opts, headers: { 'x-bot-ui': '1', 'content-type': 'application/json' } }).then(async (r) => ({ ok: r.ok, data: await r.json().catch(() => ({})) }));
+
+const RARITIES = ['C', 'PC', 'R', 'SR', 'UR', 'L'];
+const RARITY_NAMES = { C: 'Commune', PC: 'Peu commune', R: 'Rare', SR: 'Super rare', UR: 'Ultra rare', L: 'Légendaire' };
+const TRI = [['wishlist', 'On my wishlist'], ['shiny', 'Shiny'], ['starred', 'Starred'], ['tagged', 'Has a tag']];
+const NUMS = [['minPageviews', 'Min pageviews'], ['maxPageviews', 'Max pageviews'], ['minQScore', 'Min quality score'], ['maxQScore', 'Max quality score'],
+  ['minAtk', 'Min ATK'], ['maxAtk', 'Max ATK'], ['minDef', 'Min DEF'], ['maxDef', 'Max DEF'], ['minPrice', 'Min current price'], ['maxCurrentPrice', 'Max current price']];
+const TXT = [['titleRegex', 'Title matches (regex)'], ['categoryRegex', 'Category matches (regex)']];
+
+const SETTINGS = [
+  ['Timing (bids)', [
+    ['timing.targetRemainingMs', 'num', 'Bid lands this long before the end (ms)', 'Must stay above 10000, otherwise the bid extends the auction.'],
+    ['timing.extraBidLatencyMs', 'num', 'Send bids this much earlier (ms)', 'Raise it if the log says an auction was extended by your bid.'],
+    ['timing.jitterMs', 'num', 'Random timing jitter (± ms)'],
+    ['timing.preCheckLeadMs', 'num', 'Re-check the auction this long before firing (ms)'],
+    ['timing.horizonMinutes', 'num', 'Plan non-wishlist bids this far ahead (min)'],
+    ['timing.maxPages', 'num', 'Auction pages scanned per poll'],
+    ['timing.pollSeconds', 'num', 'Poll interval (s)', 'Restart needed.'],
+  ]],
+  ['Safety limits', [
+    ['global.dailySpendCap', 'num', 'Daily spend cap', 'Resets when the bot restarts.'],
+    ['global.reserveBalance', 'num', 'Balance to always keep'],
+    ['global.maxSnipesPerHour', 'num', 'Max bids per hour'],
+    ['global.minGapBetweenBidsMs', 'num', 'Minimum gap between bids (ms)'],
+    ['global.skipOwned', 'bool', 'Skip cards I already own'],
+    ['dryRun', 'bool', 'Force dry-run (never bid, never open packs)', 'Restart needed.'],
+  ]],
+  ['Packs', [
+    ['packs.enabled', 'bool', 'Open packs automatically'],
+    ['packs.checkSeconds', 'num', 'Look for a free pack every (s)'],
+    ['packs.jitterSeconds', 'num', 'Plus a random 0 to (s)'],
+    ['packs.gapMs', 'range', 'Wait before each pack open (ms)'],
+    ['packs.maxPerRun', 'num', 'Max packs per check'],
+    ['packs.backoffMinutes', 'num', 'Pause after an error (min)'],
+  ]],
+  ['Recycling', [
+    ['recycle.afterPackOpen', 'bool', 'Recycle right after opening a pack'],
+    ['recycle.sweepExisting', 'bool', 'Also sweep my whole collection'],
+    ['recycle.sweepMinutes', 'num', 'Sweep every (min)'],
+    ['recycle.maxPerRun', 'num', 'Max recycled per run'],
+    ['recycle.gapMs', 'range', 'Wait before each recycle (ms)'],
+    ['recycle.default', 'select', 'When no recycle rule matches', '', ['keep', 'recycle']],
+  ]],
+];
+
+let tab = 'dashboard';
+let cfg = null, orig = null, dirty = false, state = null;
+
+const get = (o, p) => p.split('.').reduce((a, k) => a?.[k], o);
+const set = (o, p, v) => { const ks = p.split('.'); const last = ks.pop(); ks.reduce((a, k) => (a[k] ??= {}), o)[last] = v; };
+const markDirty = () => { dirty = true; $('#savebar').classList.add('show'); $('#savemsg').textContent = 'Unsaved changes'; $('#savemsg').className = ''; };
+const fmtSec = (s) => (s < 0 ? 'now' : s < 90 ? `${s}s` : s < 5400 ? `${Math.floor(s / 60)}m ${s % 60}s` : `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`);
+const clock = (iso) => new Date(iso).toLocaleTimeString();
+
+/* ---------- dashboard ---------- */
+function stat(label, value, sub) { return h('div', { class: 'stat' }, h('b', {}, value ?? '–'), h('span', {}, label + (sub ? ` · ${sub}` : ''))); }
+
+function renderDashboard() {
+  const s = state; if (!s) return h('p', { class: 'empty' }, 'Connecting…');
+  const bidRows = s.recentBids.map((b) => h('tr', {},
+    h('td', {}, clock(b.at)), h('td', {}, b.title ?? b.id?.slice(0, 8)), h('td', {}, b.amount),
+    h('td', {}, b.dry ? 'dry-run' : b.status === 200 ? 'bid placed' : `failed (${b.status})`),
+    h('td', {}, b.predictedRemainingMs ? `${(b.predictedRemainingMs / 1000).toFixed(1)}s before end` : ''),
+    h('td', {}, b.extendedMs ? h('span', { class: 'err' }, `extended +${b.extendedMs / 1000}s`) : b.extendedMs === 0 ? h('span', { class: 'good' }, 'no') : '')));
+  const planRows = s.plans.map((p) => h('tr', {},
+    h('td', {}, p.title ?? p.id.slice(0, 8)), h('td', {}, h('span', { class: 'chip' }, p.rarity ?? '?')), h('td', {}, p.amount), h('td', {}, p.rule),
+    h('td', {}, fmtSec(p.fireInSec)), h('td', {}, clock(p.endAt))));
+  return h('div', {},
+    h('div', { class: 'grid' },
+      stat('Balance', s.balance), stat('Spent today', `${s.spentToday} / ${s.dailySpendCap}`),
+      stat('Bids placed', s.stats.bidsOk, s.stats.bidsFailed ? `${s.stats.bidsFailed} failed` : ''),
+      stat('Packs opened', s.stats.packs), stat('Cards recycled', s.stats.recycled),
+      stat('Wishlist cards', s.wishlistSize), stat('Session valid for', `${s.sessionMinLeft} min`),
+      stat('Clock / latency', `${s.clock.offsetMs} ms`, `rtt ${s.clock.rttMs} ms`), stat('Uptime', fmtSec(s.uptimeSec))),
+    h('section', {}, h('h2', {}, 'Upcoming snipes'),
+      s.plans.length ? h('table', {}, h('thead', {}, h('tr', {}, ['Card', 'Rarity', 'Bid', 'Rule', 'Fires in', 'Auction ends'].map((x) => h('th', {}, x)))), h('tbody', {}, planRows)) : h('p', { class: 'empty' }, 'Nothing planned. The bot looks for matching auctions continuously.')),
+    h('section', {}, h('h2', {}, 'Recent bids'),
+      s.recentBids.length ? h('table', {}, h('thead', {}, h('tr', {}, ['Time', 'Card', 'Bid', 'Result', 'Landed', 'Extended?'].map((x) => h('th', {}, x)))), h('tbody', {}, bidRows)) : h('p', { class: 'empty' }, 'No bids yet.')),
+    h('section', {}, h('h2', {}, 'Live log'), h('pre', { id: 'log' }, s.log.join('\n'))));
+}
+
+/* ---------- rule editor ---------- */
+function ruleCard(list, i, kind) {
+  const r = list[i];
+  r.when ??= {};
+  const w = r.when;
+  const refresh = () => { markDirty(); draw(); };
+  const tri = ([k, label]) => h('label', { class: 'f' }, label,
+    h('select', { onchange: (e) => { const v = e.target.value; if (v === '') delete w[k]; else w[k] = v === 'yes'; markDirty(); } },
+      h('option', { value: '' }, 'any'), h('option', { value: 'yes' }, 'yes'), h('option', { value: 'no' }, 'no')));
+  const triEls = TRI.map((t) => { const el = tri(t); el.querySelector('select').value = w[t[0]] === undefined ? '' : w[t[0]] ? 'yes' : 'no'; return el; });
+  const num = ([k, label]) => (kind === 'recycle' && /Price|Current/.test(k) ? null : h('label', { class: 'f' }, label,
+    h('input', { type: 'number', value: w[k] ?? '', oninput: (e) => { e.target.value === '' ? delete w[k] : (w[k] = Number(e.target.value)); markDirty(); } })));
+  const txt = ([k, label]) => h('label', { class: 'f' }, label,
+    h('input', { type: 'text', value: w[k] ?? '', oninput: (e) => { e.target.value === '' ? delete w[k] : (w[k] = e.target.value); markDirty(); } }));
+  const rarity = h('label', { class: 'f' }, 'Rarity',
+    h('div', { class: 'rar' }, RARITIES.map((x) => h('label', { title: RARITY_NAMES[x] }, h('input', { type: 'checkbox', checked: (w.rarity ?? []).includes(x), onchange: (e) => {
+      const set_ = new Set(w.rarity ?? []); e.target.checked ? set_.add(x) : set_.delete(x);
+      set_.size ? (w.rarity = RARITIES.filter((y) => set_.has(y))) : delete w.rarity; markDirty(); } }), x))));
+
+  let action;
+  if (kind === 'recycle') {
+    action = h('label', { class: 'f' }, 'Then',
+      h('select', { onchange: (e) => { r.action = e.target.value; markDirty(); } }, ['keep', 'recycle'].map((a) => h('option', { value: a, selected: r.action === a }, a === 'keep' ? 'Keep the card' : 'Recycle the card'))));
+  } else {
+    r.bid ??= { max: 1, increment: 1 };
+    action = [
+      h('label', { class: 'f' }, 'Then',
+        h('select', { onchange: (e) => { if (e.target.value === 'skip') { r.skip = true; } else { delete r.skip; r.bid ??= { max: 1, increment: 1 }; } refresh(); } },
+          h('option', { value: 'bid', selected: !r.skip }, 'Bid'), h('option', { value: 'skip', selected: !!r.skip }, 'Never bid'))),
+      !r.skip && h('label', { class: 'f' }, 'Highest bid I will place',
+        h('input', { type: 'number', value: r.bid.max, oninput: (e) => { r.bid.max = Number(e.target.value); markDirty(); } })),
+      !r.skip && h('label', { class: 'f' }, 'Raise by',
+        h('input', { type: 'number', value: r.bid.increment ?? 1, oninput: (e) => { r.bid.increment = Number(e.target.value); markDirty(); } })),
+    ];
+  }
+  const move = (d) => { const j = i + d; if (j < 0 || j >= list.length) return; [list[i], list[j]] = [list[j], list[i]]; refresh(); };
+  return h('div', { class: 'rule' + (r.enabled === false ? ' off' : '') },
+    h('div', { class: 'rule-head' },
+      h('span', { class: 'chip' }, `#${i + 1}`),
+      h('input', { type: 'text', value: r.name ?? '', placeholder: 'Rule name', oninput: (e) => { r.name = e.target.value; markDirty(); } }),
+      h('label', {}, h('input', { type: 'checkbox', checked: r.enabled !== false, onchange: (e) => { e.target.checked ? delete r.enabled : (r.enabled = false); refresh(); } }), ' on'),
+      h('button', { title: 'Move up (checked earlier)', onclick: () => move(-1) }, '▲'), h('button', { title: 'Move down', onclick: () => move(1) }, '▼'),
+      h('button', { class: 'danger', onclick: () => { if (confirm(`Delete rule "${r.name}"?`)) { list.splice(i, 1); refresh(); } } }, 'Delete')),
+    h('div', { class: 'conds' }, rarity, triEls, NUMS.map(num), TXT.map(txt)),
+    h('div', { class: 'actionrow' }, action));
+}
+
+function renderRules(kind) {
+  const list = kind === 'bid' ? cfg.rules : cfg.recycle.rules;
+  const head = kind === 'bid'
+    ? h('p', { class: 'hint' }, 'Rules are checked from top to bottom and the first match wins. Leave a condition on "any"/empty to ignore it. Bids always land ~11s before the end.')
+    : h('div', {},
+      h('p', { class: 'hint' }, 'Recycling is permanent (about +1 balance each). Rules are checked top to bottom; first match wins. Cards in a pending trade are always kept.'),
+      h('section', {}, h('label', {}, h('input', { type: 'checkbox', checked: cfg.recycle.enabled, onchange: (e) => { cfg.recycle.enabled = e.target.checked; markDirty(); } }), ' Recycling is ',
+        h('b', {}, 'enabled'), ' (when off, the bot only reports what it would recycle)')));
+  return h('div', {}, head, list.map((_, i) => ruleCard(list, i, kind)),
+    h('button', { onclick: () => { list.push(kind === 'bid' ? { name: 'new rule', when: {}, bid: { max: 5, increment: 1 } } : { name: 'new rule', when: {}, action: 'keep' }); markDirty(); draw(); } }, '+ Add rule'));
+}
+
+function renderSettings() {
+  return h('div', {}, SETTINGS.map(([title, fields]) => h('section', {}, h('h2', {}, title), fields.map(([path, type, label, help, opts]) => {
+    let input;
+    const v = get(cfg, path);
+    if (type === 'num') input = h('input', { type: 'number', value: v ?? '', oninput: (e) => { set(cfg, path, Number(e.target.value)); markDirty(); } });
+    else if (type === 'bool') input = h('input', { type: 'checkbox', checked: !!v, onchange: (e) => { set(cfg, path, e.target.checked); markDirty(); } });
+    else if (type === 'select') input = h('select', { onchange: (e) => { set(cfg, path, e.target.value); markDirty(); } }, opts.map((o) => h('option', { value: o, selected: v === o }, o)));
+    else input = h('div', { class: 'range' }, [0, 1].map((k) => h('input', { type: 'number', value: v?.[k] ?? '', oninput: (e) => { const a = [...(get(cfg, path) ?? [0, 0])]; a[k] = Number(e.target.value); set(cfg, path, a); markDirty(); } })));
+    return h('div', { class: 'row' }, h('div', {}, label, help && h('small', {}, help)), h('div', {}, input));
+  }))));
+}
+
+/* ---------- shell ---------- */
+const TABS = [['dashboard', 'Dashboard'], ['bid', 'Bid rules'], ['recycle', 'Recycle rules'], ['settings', 'Settings']];
+function drawTabs() {
+  $('#tabs').replaceChildren(...TABS.map(([id, label]) => h('button', { class: tab === id ? 'on' : '', onclick: () => { tab = id; draw(); } }, label)));
+}
+function draw() { drawTabs(); drawView(); }
+function drawView() {
+  const v = $('#view');
+  if (tab === 'dashboard') { v.replaceChildren(renderDashboard()); const l = $('#log'); if (l) l.scrollTop = l.scrollHeight; }
+  else if (!cfg) v.replaceChildren(h('p', { class: 'empty' }, 'Loading settings…'));
+  else v.replaceChildren(tab === 'bid' ? renderRules('bid') : tab === 'recycle' ? renderRules('recycle') : renderSettings());
+}
+
+async function poll() {
+  const r = await api('/api/state').catch(() => null);
+  if (r?.ok) {
+    state = r.data;
+    const m = $('#mode');
+    m.textContent = state.paused ? 'PAUSED' : state.mode === 'live' ? 'LIVE' : 'DRY-RUN';
+    m.className = 'badge ' + (state.paused ? 'paused' : state.mode === 'live' ? 'live' : 'dry');
+    $('#pause').textContent = state.paused ? 'Resume' : 'Pause';
+    if (tab === 'dashboard') { const l = $('#log'); const stick = !l || l.scrollTop + l.clientHeight >= l.scrollHeight - 30; drawView(); if (stick) { const n = $('#log'); if (n) n.scrollTop = n.scrollHeight; } }
+  } else { $('#mode').textContent = 'offline'; $('#mode').className = 'badge paused'; }
+}
+async function loadConfig() { const r = await api('/api/config'); cfg = r.data; orig = JSON.stringify(cfg); dirty = false; $('#savebar').classList.remove('show'); draw(); }
+
+$('#pause').onclick = async () => { await api('/api/pause', { method: 'POST', body: JSON.stringify({ paused: !state?.paused }) }); poll(); };
+$('#discard').onclick = () => loadConfig();
+$('#save').onclick = async () => {
+  const r = await api('/api/config', { method: 'PUT', body: JSON.stringify(cfg) });
+  const m = $('#savemsg');
+  if (r.ok) { m.textContent = 'Saved. The bot applies it within a few seconds.'; m.className = 'good'; dirty = false; setTimeout(() => $('#savebar').classList.remove('show'), 2500); }
+  else { m.textContent = 'Not saved: ' + (r.data.errors ?? [r.data.error]).join('; '); m.className = 'err'; }
+};
+window.addEventListener('beforeunload', (e) => { if (dirty) e.preventDefault(); });
+
+loadConfig();
+poll();
+setInterval(poll, 2000);
+</script>
+</body>
+</html>

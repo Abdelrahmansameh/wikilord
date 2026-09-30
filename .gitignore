@@ -1,0 +1,18 @@
+# secrets / session
+.env
+.session.json
+
+# captures and logs
+*.har
+*.log
+bids.jsonl
+
+# personal or scratch config
+config.json
+config.default.json
+config.backup.json
+config.snipetest.json
+config.pretest.json
+
+node_modules
+.claude

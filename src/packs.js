@@ -1,0 +1,151 @@
+import { decideRecycle, ownedFacts } from './rules.js';
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const rnd = ([a, b]) => a + Math.random() * (b - a);
+
+/**
+ * Opens packs whenever they are available and recycles unwanted cards.
+ * Everything that changes the account only runs when `dry` is false.
+ */
+export function startPacks({ session, cfg, log, dry, getWishlist, control = { paused: false }, stats = {} }) {
+  const P = cfg.packs ?? { enabled: false };
+  const R = cfg.recycle ?? { enabled: false };
+  let pausedUntil = 0;
+  let busy = false;
+
+  /** Apply the recycle.rules policy to one owned card. */
+  const shouldRecycle = (facts) => decideRecycle(R, facts, getWishlist()).action === 'recycle';
+
+  async function discard(userCardId, label) {
+    const r = await session.request('POST', `/api/user-cards/${userCardId}/discard`);
+    if (r.status === 200 && typeof r.json?.balance === 'number') {
+      stats.recycled = (stats.recycled ?? 0) + 1;
+      log(`recycled ${label} -> balance ${r.json.balance}`);
+      return true;
+    }
+    log(`recycle FAILED ${label}: HTTP ${r.status} ${r.text.slice(0, 160)}`);
+    return false;
+  }
+
+  async function recycleList(items, why) {
+    const todo = items.slice(0, R.maxPerRun);
+    if (!todo.length) return 0;
+    if (dry || !R.enabled) {
+      log(`recycle [${dry ? 'dry-run' : 'disabled'}] would recycle ${todo.length} card(s) (${why}): ${todo.slice(0, 8).map((x) => x.label).join(', ')}${todo.length > 8 ? ', ...' : ''}`);
+      return 0;
+    }
+    let done = 0;
+    for (const it of todo) {
+      await sleep(rnd(R.gapMs));
+      if (!(await discard(it.id, it.label))) break;
+      done++;
+    }
+    return done;
+  }
+
+  /** Recycle the unwanted commons that just came out of a pack. */
+  async function recycleFromPack(pack) {
+    const byId = new Map(pack.cards.map((c) => [c.id, c]));
+    const items = [];
+    for (const o of pack.owned_copies ?? []) {
+      const c = byId.get(o.card_id);
+      if (!c) continue;
+      const ok = shouldRecycle(ownedFacts({ card: c, cardId: o.card_id, shiny: o.is_shiny, starred: o.starred, tagged: (o.user_card_tags ?? []).length > 0 }));
+      if (ok) items.push({ id: o.id, label: `${c.wikipedia_title} [${c.rarity}]` });
+    }
+    return recycleList(items, 'from pack');
+  }
+
+  /** Scan the whole collection for recyclable cards. */
+  async function sweep() {
+    for (let round = 1; round <= 5; round++) {
+      const items = [];
+      let seen = 0;
+      let pendingTrade = new Set();
+      for (let page = 0; page < 50; page++) {
+        const r = await session.request('GET', `/api/my-collection?sort=rarity&page=${page}&stats=0`);
+        if (r.status !== 200 || !Array.isArray(r.json?.collection)) return void log(`sweep: collection fetch failed HTTP ${r.status}`);
+        if (page === 0) pendingTrade = new Set(r.json.pendingTradeCardIds ?? []);
+        if (!r.json.collection.length) break;
+        seen += r.json.collection.length;
+        for (const e of r.json.collection) {
+          if (pendingTrade.has(e.id) || pendingTrade.has(e.card_id)) continue;
+          const ok = shouldRecycle(ownedFacts({ card: e.card, cardId: e.card_id, shiny: e.is_shiny, starred: e.starred, tagged: (e.tags ?? []).length > 0 }));
+          if (ok) items.push({ id: e.id, label: `${e.card.wikipedia_title} [${e.card.rarity}]` });
+        }
+        if (r.json.total != null && seen >= r.json.total) break;
+      }
+      if (round === 1) log(`sweep: ${seen} cards in collection, ${items.length} recyclable`);
+      if (!items.length) return;
+      const done = await recycleList(items, 'collection sweep');
+      if (!done) return; // dry-run / disabled / failed: do not loop
+    }
+  }
+
+  async function openPacks() {
+    const s = await session.rpc('sync_profile_packs', { user_id: cfg.myUserId });
+    const remaining0 = s.json?.packs_remaining;
+    if (typeof remaining0 !== 'number') return void log(`packs: sync failed HTTP ${s.status} ${s.text.slice(0, 120)}`);
+    if (remaining0 <= 0) return;
+    if (dry) return void log(`packs [dry-run] ${remaining0} pack(s) available, would open them`);
+
+    let remaining = remaining0;
+    let opened = 0;
+    while (remaining > 0 && opened < P.maxPerRun) {
+      await sleep(rnd(P.gapMs));
+      const r = await session.request('POST', '/api/packs/open');
+      if (r.status !== 200 || !Array.isArray(r.json?.cards)) {
+        const body = r.text.slice(0, 200);
+        if (/captcha|human|verif|turnstile/i.test(body)) {
+          pausedUntil = Date.now() + 3600_000;
+          return void log(`packs: the site asks for human verification (HTTP ${r.status}). Pausing pack opening for 1h. Open a pack in your browser once to verify. ${body}`);
+        }
+        pausedUntil = Date.now() + P.backoffMinutes * 60_000;
+        return void log(`packs: open failed HTTP ${r.status} ${body}. Backing off ${P.backoffMinutes} min.`);
+      }
+      opened++;
+      stats.packs = (stats.packs ?? 0) + 1;
+      remaining = r.json.packs_remaining ?? remaining - 1;
+      const wl = getWishlist();
+      const summary = r.json.cards.map((c) => `${c.wikipedia_title} [${c.rarity}]${wl.has(c.id) ? ' *WISHLIST*' : ''}`);
+      log(`PACK opened (${remaining} left): ${summary.join(' | ')}`);
+      if (R.enabled && R.afterPackOpen) await recycleFromPack(r.json);
+    }
+  }
+
+  async function tick() {
+    if (busy || control.paused || Date.now() < pausedUntil) return;
+    busy = true;
+    try {
+      if (P.enabled) await openPacks();
+    } catch (e) {
+      log('packs error:', e.message);
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function sweepTick() {
+    if (control.paused) return;
+    if (busy) return void setTimeout(sweepTick, 15_000); // wait for the pack routine to finish
+    busy = true;
+    try {
+      if (R.sweepExisting) await sweep();
+    } catch (e) {
+      log('sweep error:', e.message);
+    } finally {
+      busy = false;
+    }
+  }
+
+  // Randomised schedules so requests are never on a fixed beat.
+  const loop = (fn, baseSec, jitterSec) => {
+    const next = () => setTimeout(async () => (await fn(), next()), (baseSec() + Math.random() * jitterSec()) * 1000);
+    next();
+  };
+  loop(tick, () => P.checkSeconds, () => P.jitterSeconds);
+  loop(sweepTick, () => R.sweepMinutes * 60, () => R.sweepMinutes * 12);
+  setTimeout(sweepTick, 20_000);
+  setTimeout(tick, 8_000);
+  log(`packs: ${P.enabled ? 'on' : 'off'}, recycle: ${R.enabled ? (dry ? 'on (dry-run only)' : 'ON') : 'off (report only)'}, ${R.rules.length} recycle rule(s), default=${R.default}`);
+}
