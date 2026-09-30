@@ -39,7 +39,8 @@ export function startUI({ port, getState, control, log, session, onConnected, ge
         return send(res, r.ok ? 200 : 400, r);
       }
       if (req.method === 'POST' && url.pathname === '/api/recycle') {
-        const r = await recycleCard(JSON.parse((await readBody(req)) || '{}').cardId);
+        const { cardId, force } = JSON.parse((await readBody(req)) || '{}');
+        const r = await recycleCard(cardId, { force: force === true });
         return send(res, r.ok ? 200 : 400, r);
       }
       if (req.method === 'POST' && url.pathname === '/api/sell') {

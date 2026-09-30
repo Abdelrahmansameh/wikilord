@@ -508,8 +508,8 @@ async function main() {
       sellCard: (cardId, opts) => values.sell(cardId, opts),
       refreshValues: () => values.refreshAll(),
       refreshValue: (cardId) => values.refreshOne(cardId),
-      recycleCard: async (cardId) => {
-        const r = await values.recycle(cardId);
+      recycleCard: async (cardId, opts) => {
+        const r = await values.recycle(cardId, opts);
         if (r.ok) balance = r.balance;
         return r;
       },

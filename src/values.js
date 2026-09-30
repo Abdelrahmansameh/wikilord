@@ -166,17 +166,18 @@ export function startValues({ session, log, control = {}, isProtected = () => nu
   }
 
   /** Recycle one card, only when asked from the dashboard. Refuses protected cards. */
-  async function recycle(cardId) {
+  async function recycle(cardId, { force = false } = {}) {
     const c = owned.find((x) => x.cardId === cardId);
     if (!c) return { ok: false, error: 'card not found in your collection (it may already be gone)' };
+    // protected cards only on an explicit request for that card (the dashboard asks for an extra click)
     const why = isProtected(factsOf(c));
-    if (why) return { ok: false, error: `this card is protected (${why})` };
+    if (why && !force) return { ok: false, error: `this card is protected (${why})` };
     if ((listedNow.get(cardId) ?? 0) > Date.now()) return { ok: false, error: 'this card is on sale' };
     const r = await session.request('POST', `/api/user-cards/${c.userCardId}/discard`);
     if (r.status !== 200 || typeof r.json?.balance !== 'number') return { ok: false, error: `the site refused (HTTP ${r.status}): ${r.json?.error ?? r.text.slice(0, 120)}` };
     owned = owned.filter((x) => x.userCardId !== c.userCardId);
     const average = store[cardId]?.summary?.[c.rarity]?.average ?? null;
-    cardEvent('recycled', { cardId, title: c.title, rarity: c.rarity, rule: 'manual (Value tab)', balance: r.json.balance, average });
+    cardEvent('recycled', { cardId, title: c.title, rarity: c.rarity, rule: why ? `manual, protection overridden (${why})` : 'manual (Value tab)', balance: r.json.balance, average });
     log(`recycled ${c.title} [${c.rarity}] from the Value tab -> balance ${r.json.balance}`);
     return { ok: true, balance: r.json.balance };
   }

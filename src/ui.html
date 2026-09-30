@@ -334,7 +334,7 @@ function renderCards() {
   const chips = h('div', { id: 'cardchips', style: 'display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px' });
   const search = h('input', { type: 'text', placeholder: 'Search by card name…', value: cardsFilter.q, style: 'max-width:280px', oninput: (e) => { cardsFilter.q = e.target.value; loadCards(); } });
   box.append(
-    h('p', { class: 'hint' }, 'Every card the bot has seen: opened in packs, won at auction, recycled, put on sale and sold. This is a lifetime log kept on this computer (it starts from when this feature was added). Cards the bot won by bidding, and cards that match a bid rule, are never sold or recycled.'),
+    h('p', { class: 'hint' }, 'Every card the bot has seen: opened in packs, won at auction, recycled, put on sale and sold. This is a lifetime log kept on this computer (it starts from when this feature was added). Cards the bot won by bidding, and cards that match a bid rule, are never sold or recycled automatically (🔒 on the Value tab: you can still do it by hand with an extra click).'),
     h('div', { id: 'cardsum', class: 'grid' }), chips, h('div', { style: 'margin-bottom:10px' }, search), h('div', { id: 'cardtable' }));
   return box;
 }
@@ -384,49 +384,57 @@ function refreshButton(c) {
   } }, '↻ Refresh');
 }
 
-/** Recycle: only for unprotected cards; needs a second click. */
-function recycleButton(c) {
-  if (c.protectedBy || c.listed) return '';
+/**
+ * Button that needs several clicks: one to arm, one more to confirm, and one extra step for protected cards
+ * (bought by the bot, or matching a bid rule). Protected buttons carry a 🔒.
+ */
+function stagedButton({ label, steps, run, danger }) {
   const msg = h('div', { class: 'hint' });
-  const btn = h('button', { class: 'danger', onclick: async (e) => {
-    const b = e.currentTarget;
-    if (!b.dataset.armed) {
-      b.dataset.armed = '1';
-      b.textContent = c.average != null && c.average >= 20 ? 'Worth ~' + c.average + '! Click again to recycle' : 'Click again to recycle (+1)';
-      setTimeout(() => { if (b.isConnected && b.dataset.armed) { delete b.dataset.armed; b.textContent = 'Recycle'; } }, 4000);
+  let step = 0;
+  let timer;
+  const btn = h('button', { class: danger ? 'danger' : '', onclick: async () => {
+    clearTimeout(timer);
+    if (step < steps.length) {
+      btn.textContent = steps[step++];
+      timer = setTimeout(() => { if (btn.isConnected) { step = 0; btn.textContent = label; } }, 5000);
       return;
     }
-    b.disabled = true;
-    b.textContent = 'Recycling…';
-    const r = await api('/api/recycle', { method: 'POST', body: JSON.stringify({ cardId: c.cardId }) });
-    if (r.ok) b.replaceWith(h('span', { class: 'good' }, 'Recycled · balance ' + r.data.balance));
-    else { b.disabled = false; delete b.dataset.armed; b.textContent = 'Recycle'; msg.className = 'err'; msg.textContent = r.data.error; }
-  } }, 'Recycle');
+    btn.disabled = true;
+    btn.textContent = '…';
+    const r = await run();
+    if (r.ok) btn.replaceWith(h('span', { class: 'good' }, r.done));
+    else { btn.disabled = false; step = 0; btn.textContent = label; msg.className = 'err'; msg.textContent = r.error; }
+  } }, label);
   return h('div', {}, btn, msg);
 }
 
-/** Sell button: only for unprotected cards with a price; asks for a second click, then lists it. */
+/** Recycle: unprotected cards need one confirm click, protected cards one more. */
+function recycleButton(c) {
+  if (c.listed) return '';
+  const lock = c.protectedBy ? '🔒 ' : '';
+  const steps = [];
+  if (c.protectedBy) steps.push('🔒 Protected (' + c.protectedBy + ') – click to continue');
+  steps.push(c.average != null && c.average >= 20 ? lock + 'Worth ~' + c.average + '! Click again to recycle' : lock + 'Click again to recycle (+1)');
+  return stagedButton({ label: lock + 'Recycle', steps, danger: true, run: async () => {
+    const r = await api('/api/recycle', { method: 'POST', body: JSON.stringify({ cardId: c.cardId, force: Boolean(c.protectedBy) }) });
+    return r.ok ? { ok: true, done: 'Recycled · balance ' + r.data.balance } : { ok: false, error: r.data.error };
+  } });
+}
+
+/** Sell: unprotected cards need one confirm click, protected cards one more. */
 function sellButton(c) {
   if (c.listed) return h('span', { class: 'good' }, 'on sale');
-  if (c.protectedBy || c.price == null) return '';
-  const msg = h('div', { class: 'hint' });
-  const btn = h('button', { onclick: async (e) => {
-    const b = e.currentTarget;
-    if (!b.dataset.armed) {
-      b.dataset.armed = '1';
-      b.textContent = 'Click again to list for ' + c.price;
-      setTimeout(() => { if (b.isConnected && b.dataset.armed) { delete b.dataset.armed; b.textContent = 'Sell for ' + c.price; } }, 4000);
-      return;
-    }
-    b.disabled = true;
-    b.textContent = 'Listing…';
+  if (c.price == null) return '';
+  const lock = c.protectedBy ? '🔒 ' : '';
+  const steps = [];
+  if (c.protectedBy) steps.push('🔒 Protected (' + c.protectedBy + ') – click to continue');
+  steps.push(lock + 'Click again to list for ' + c.price);
+  return stagedButton({ label: lock + 'Sell for ' + c.price, steps, run: async () => {
     window.__valuesBusy = true;
-    const r = await api('/api/sell', { method: 'POST', body: JSON.stringify({ cardId: c.cardId }) });
+    const r = await api('/api/sell', { method: 'POST', body: JSON.stringify({ cardId: c.cardId, force: Boolean(c.protectedBy) }) });
     window.__valuesBusy = false;
-    if (r.ok) { b.replaceWith(h('span', { class: 'good' }, 'Listed for ' + r.data.price + ' (' + r.data.slotsLeft + ' slot(s) left)')); }
-    else { b.disabled = false; delete b.dataset.armed; b.textContent = 'Sell for ' + c.price; msg.className = 'err'; msg.textContent = r.data.error; }
-  } }, 'Sell for ' + c.price);
-  return h('div', {}, btn, msg);
+    return r.ok ? { ok: true, done: 'Listed for ' + r.data.price + ' (' + r.data.slotsLeft + ' slot(s) left)' } : { ok: false, error: r.data.error };
+  } });
 }
 
 async function loadValues() {
