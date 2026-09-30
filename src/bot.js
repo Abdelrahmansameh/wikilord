@@ -386,7 +386,8 @@ function queueCounter(cur, decision) {
   counterTimers.set(cur.id, setTimeout(async () => {
     counterTimers.delete(cur.id);
     try {
-      const fresh = await getAuction(cur.id);
+      // The single-auction lookup sometimes 404s on a live auction (site hiccup): then bid on what we know.
+      const fresh = await getAuction(cur.id).catch((e) => (log(`counter re-check failed (${e.message}); bidding on what we know`), cur));
       if (fresh.status !== 'active' || fresh.current_bidder_id === cfg.myUserId) return; // ended, or already ours
       const d = decide(cfg, fresh, cfg.myUserId, wishlist);
       if (d.action !== 'bid') return void log(`counter dropped for ${fresh.card?.wikipedia_title}: ${d.reason}`);
