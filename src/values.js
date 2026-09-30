@@ -144,5 +144,16 @@ export function startValues({ session, log, control = {}, isProtected = () => nu
     return { ok: true, cards: owned.length };
   }
 
-  return { getValues, sell, refreshAll };
+  /** Average sale price of one card at a rarity: saved value if under staleHours old, otherwise one lookup. */
+  async function averageOf(cardId, rarity) {
+    const hit = store[cardId];
+    if (!hit || !hit.at || Date.now() - hit.at > staleHours * 3600_000) {
+      const ok = await lookup({ cardId }).catch(() => false);
+      if (ok) save();
+      else if (!hit) return null;
+    }
+    return store[cardId]?.summary?.[rarity]?.average ?? null;
+  }
+
+  return { getValues, sell, refreshAll, averageOf };
 }

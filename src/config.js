@@ -74,6 +74,7 @@ export function validate(cfg) {
   for (const k of ['enabled', 'afterPackOpen', 'sweepExisting']) if (typeof r[k] !== 'boolean') e.push(`recycle.${k} must be true or false`);
   for (const k of ['sweepMinutes', 'maxPerRun']) if (typeof r[k] !== 'number') e.push(`recycle.${k} must be a number`);
   if (!isRange(r.gapMs)) e.push('recycle.gapMs must be [min, max] in milliseconds, e.g. [3500, 5000]');
+  if (r.keepIfWorthAtLeast !== undefined && r.keepIfWorthAtLeast !== null && typeof r.keepIfWorthAtLeast !== 'number') e.push('recycle.keepIfWorthAtLeast must be a number (or null to turn it off)');
   if (!['keep', 'recycle'].includes(r.default)) e.push('recycle.default must be "keep" or "recycle"');
   if (!Array.isArray(r.rules)) e.push('recycle.rules must be a list');
   else

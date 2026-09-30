@@ -84,7 +84,7 @@ Sells cards by rules, like recycling but with action `sell` or `keep`. **Off by 
   ]
 }
 ```
-Recycling is permanent. Cards in a pending trade are always kept. Each recycle pays about +1 balance.
+Recycling is permanent. Cards in a pending trade are always kept. `"keepIfWorthAtLeast": 20` keeps any card whose average sale price is 20 or more (checked right before recycling), since recycling only pays about 1. Each recycle pays about +1 balance.
 
 Examples:
 - Also recycle weak Peu Communes: `{ "name": "weak-PC", "when": { "rarity": ["PC"], "maxPageviews": 60 }, "action": "recycle" }` (place it before any broad keep rule).

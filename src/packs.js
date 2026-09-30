@@ -9,7 +9,7 @@ const rnd = ([a, b]) => a + Math.random() * (b - a);
  * Opens packs whenever they are available and recycles unwanted cards.
  * Everything that changes the account only runs when `dry` is false.
  */
-export function startPacks({ session, cfg, log, dry, getWishlist, control = { paused: false }, stats = {}, onBalance, isProtected = () => null }) {
+export function startPacks({ session, cfg, log, dry, getWishlist, control = { paused: false }, stats = {}, onBalance, isProtected = () => null, valueOf }) {
   const P = cfg.packs ?? { enabled: false };
   const R = cfg.recycle ?? { enabled: false };
   let pausedUntil = 0;
@@ -50,6 +50,14 @@ export function startPacks({ session, cfg, log, dry, getWishlist, control = { pa
     for (const it of todo) {
       await sleep(rnd(R.gapMs));
       await control.quiet?.();
+      // never throw away a card that sells for real money (recycling pays about 1)
+      if (R.keepIfWorthAtLeast && valueOf) {
+        const avg = await valueOf(it.cardId, it.rarity).catch(() => null);
+        if (avg != null && avg >= R.keepIfWorthAtLeast) {
+          log(`kept ${it.label}: sells for about ${avg} (recycle.keepIfWorthAtLeast = ${R.keepIfWorthAtLeast})`);
+          continue;
+        }
+      }
       if (!(await discard(it))) break;
       done++;
     }

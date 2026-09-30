@@ -574,6 +574,7 @@ async function main() {
   watchConfig(cfg, log);
   startPacks({
     session, cfg, log, dry: DRY, getWishlist: () => wishlist, control, stats, isProtected: protectedBy,
+    valueOf: (cardId, rarity) => (values.averageOf ? values.averageOf(cardId, rarity) : Promise.resolve(null)),
     onBalance: (nb) => {
       const gained = nb - (balance ?? nb);
       balance = nb;
