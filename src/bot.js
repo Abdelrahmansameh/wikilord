@@ -507,6 +507,12 @@ async function main() {
       getValues: () => values.getValues(),
       sellCard: (cardId, opts) => values.sell(cardId, opts),
       refreshValues: () => values.refreshAll(),
+      refreshValue: (cardId) => values.refreshOne(cardId),
+      recycleCard: async (cardId) => {
+        const r = await values.recycle(cardId);
+        if (r.ok) balance = r.balance;
+        return r;
+      },
       onConnected: () => {
         sessionProblem = null;
         if (!cfg.myUserId) cfg.myUserId = session.readAuth()?.user?.id ?? '';

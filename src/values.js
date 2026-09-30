@@ -155,5 +155,31 @@ export function startValues({ session, log, control = {}, isProtected = () => nu
     return store[cardId]?.summary?.[rarity]?.average ?? null;
   }
 
-  return { getValues, sell, refreshAll, averageOf };
+  /** Re-check one card's price now (from the dashboard). */
+  async function refreshOne(cardId) {
+    const c = owned.find((x) => x.cardId === cardId);
+    if (!c) return { ok: false, error: 'card not found in your collection' };
+    const ok = await lookup(c);
+    if (!ok) return { ok: false, error: 'the site did not answer, try again in a moment' };
+    save();
+    return { ok: true, average: store[cardId]?.summary?.[c.rarity]?.average ?? null };
+  }
+
+  /** Recycle one card, only when asked from the dashboard. Refuses protected cards. */
+  async function recycle(cardId) {
+    const c = owned.find((x) => x.cardId === cardId);
+    if (!c) return { ok: false, error: 'card not found in your collection (it may already be gone)' };
+    const why = isProtected(factsOf(c));
+    if (why) return { ok: false, error: `this card is protected (${why})` };
+    if ((listedNow.get(cardId) ?? 0) > Date.now()) return { ok: false, error: 'this card is on sale' };
+    const r = await session.request('POST', `/api/user-cards/${c.userCardId}/discard`);
+    if (r.status !== 200 || typeof r.json?.balance !== 'number') return { ok: false, error: `the site refused (HTTP ${r.status}): ${r.json?.error ?? r.text.slice(0, 120)}` };
+    owned = owned.filter((x) => x.userCardId !== c.userCardId);
+    const average = store[cardId]?.summary?.[c.rarity]?.average ?? null;
+    cardEvent('recycled', { cardId, title: c.title, rarity: c.rarity, rule: 'manual (Value tab)', balance: r.json.balance, average });
+    log(`recycled ${c.title} [${c.rarity}] from the Value tab -> balance ${r.json.balance}`);
+    return { ok: true, balance: r.json.balance };
+  }
+
+  return { getValues, sell, refreshAll, averageOf, refreshOne, recycle };
 }

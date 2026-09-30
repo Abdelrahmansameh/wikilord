@@ -371,6 +371,40 @@ async function loadCards() {
 }
 
 /* ---------- value: rough market value of owned cards ---------- */
+/** Re-check this card's price now. */
+function refreshButton(c) {
+  return h('button', { title: 'Re-check the average sale price now', onclick: async (e) => {
+    const b = e.currentTarget;
+    b.disabled = true;
+    b.textContent = '…';
+    const r = await api('/api/values/refresh-one', { method: 'POST', body: JSON.stringify({ cardId: c.cardId }) });
+    b.disabled = false;
+    b.textContent = r.ok ? '↻ ' + (r.data.average ?? 'no sales') : '↻ failed';
+    setTimeout(loadValues, 1500);
+  } }, '↻ Refresh');
+}
+
+/** Recycle: only for unprotected cards; needs a second click. */
+function recycleButton(c) {
+  if (c.protectedBy || c.listed) return '';
+  const msg = h('div', { class: 'hint' });
+  const btn = h('button', { class: 'danger', onclick: async (e) => {
+    const b = e.currentTarget;
+    if (!b.dataset.armed) {
+      b.dataset.armed = '1';
+      b.textContent = c.average != null && c.average >= 20 ? 'Worth ~' + c.average + '! Click again to recycle' : 'Click again to recycle (+1)';
+      setTimeout(() => { if (b.isConnected && b.dataset.armed) { delete b.dataset.armed; b.textContent = 'Recycle'; } }, 4000);
+      return;
+    }
+    b.disabled = true;
+    b.textContent = 'Recycling…';
+    const r = await api('/api/recycle', { method: 'POST', body: JSON.stringify({ cardId: c.cardId }) });
+    if (r.ok) b.replaceWith(h('span', { class: 'good' }, 'Recycled · balance ' + r.data.balance));
+    else { b.disabled = false; delete b.dataset.armed; b.textContent = 'Recycle'; msg.className = 'err'; msg.textContent = r.data.error; }
+  } }, 'Recycle');
+  return h('div', {}, btn, msg);
+}
+
 /** Sell button: only for unprotected cards with a price; asks for a second click, then lists it. */
 function sellButton(c) {
   if (c.listed) return h('span', { class: 'good' }, 'on sale');
@@ -410,8 +444,8 @@ async function loadValues() {
       h('td', {}, c.average != null ? h('b', {}, String(c.average)) : h('span', { class: 'hint' }, c.checkedAt ? 'no sales yet' : 'checking…')),
       h('td', {}, c.average != null ? String(Math.round(c.average * 0.75)) : ''),
       h('td', { class: 'hint' }, c.protectedBy ?? ''),
-      h('td', { class: 'hint' }, ago(c.checkedAt)),
-      h('td', {}, sellButton(c))));
+      h('td', { class: 'hint' }, c.checkedAt ? ago(c.checkedAt) : c.average != null ? 'queued for refresh' : 'not yet'),
+      h('td', {}, h('div', { style: 'display:flex;gap:6px;flex-wrap:wrap;align-items:flex-start' }, sellButton(c), refreshButton(c), recycleButton(c)))));
     $('#valuebox').replaceChildren(
       h('p', { class: 'hint' }, 'A rough idea of what your cards are worth: the average price each card has sold for on the marketplace, at its rarity. The bot checks one card every few seconds at first, then refreshes slowly (each value can be up to about 12 hours old).'),
       h('div', { class: 'grid' },
