@@ -150,5 +150,65 @@
   "ui": {
     "enabled": true,
     "port": 8787
+  },
+  "sell": {
+    "enabled": false,
+    "checkMinutes": 10,
+    "maxListings": 5,
+    "priceFactor": 0.75,
+    "durationMinutes": 60,
+    "minListPrice": 5,
+    "noDataPrice": null,
+    "lookupsPerRun": 25,
+    "gapMs": [
+      3500,
+      5000
+    ],
+    "lookupGapMs": [
+      800,
+      1600
+    ],
+    "default": "keep",
+    "rules": [
+      {
+        "name": "keep-wishlist",
+        "when": {
+          "wishlist": true
+        },
+        "action": "keep"
+      },
+      {
+        "name": "keep-shiny",
+        "when": {
+          "shiny": true
+        },
+        "action": "keep"
+      },
+      {
+        "name": "keep-starred",
+        "when": {
+          "starred": true
+        },
+        "action": "keep"
+      },
+      {
+        "name": "keep-tagged",
+        "when": {
+          "tagged": true
+        },
+        "action": "keep"
+      },
+      {
+        "name": "sell-top-rarities",
+        "when": {
+          "rarity": [
+            "L",
+            "UR",
+            "SR"
+          ]
+        },
+        "action": "sell"
+      }
+    ]
   }
 }

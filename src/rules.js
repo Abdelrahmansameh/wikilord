@@ -56,6 +56,12 @@ export function matches(when = {}, f, wishlist = new Set()) {
   return true;
 }
 
+/**
+ * Lowest bid the site accepts on top of `current`: 10% more, rounded up, and at least +1.
+ * (Same rule as the site's own page; integer maths so 20 -> 22, not 23.)
+ */
+export const minNextBid = (current) => Math.max(Math.ceil((current * 11) / 10), current + 1);
+
 /** Returns { action: 'bid', rule, amount } or { action: 'skip', reason }. First matching rule wins. */
 export function decide(cfg, a, myUserId, wishlist = new Set()) {
   if (a.status !== 'active') return { action: 'skip', reason: 'not active' };
@@ -68,7 +74,7 @@ export function decide(cfg, a, myUserId, wishlist = new Set()) {
     if (rule.enabled === false || !matches(rule.when, f, wishlist)) continue;
     if (rule.skip) return { action: 'skip', reason: `rule ${rule.name}` };
     const inc = rule.bid?.increment ?? 1;
-    const amount = a.current_bid == null ? a.base_amount : a.current_bid + inc;
+    const amount = a.current_bid == null ? a.base_amount : Math.max(a.current_bid + inc, minNextBid(a.current_bid));
     if (amount > (rule.bid?.max ?? 0)) return { action: 'skip', reason: `rule ${rule.name}: ${amount} > max ${rule.bid?.max}` };
     return { action: 'bid', rule: rule.name, amount };
   }
@@ -82,6 +88,15 @@ export function decideRecycle(rcfg, facts, wishlist = new Set()) {
     return { action: rule.action, rule: rule.name };
   }
   return { action: rcfg.default, rule: 'default' };
+}
+
+/** Returns { action: 'sell' | 'keep', rule, ruleObj }. First matching rule wins, otherwise sell.default. */
+export function decideSell(scfg, facts, wishlist = new Set()) {
+  for (const rule of scfg.rules) {
+    if (rule.enabled === false || !matches(rule.when, facts, wishlist)) continue;
+    return { action: rule.action, rule: rule.name, ruleObj: rule };
+  }
+  return { action: scfg.default, rule: 'default', ruleObj: null };
 }
 
 export const describe = (a) =>

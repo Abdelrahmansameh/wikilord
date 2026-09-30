@@ -9,7 +9,8 @@ const WHEN_KEYS = new Set([
   'titleRegex', 'categoryRegex', 'titleContains',
 ]);
 const RARITIES = new Set(['C', 'PC', 'R', 'SR', 'UR', 'L']);
-const TOP_KEYS = new Set(['dryRun', 'myUserId', 'timing', 'global', 'rules', 'packs', 'recycle', 'ui']);
+const TOP_KEYS = new Set(['dryRun', 'myUserId', 'timing', 'global', 'rules', 'packs', 'recycle', 'sell', 'ui']);
+const DURATIONS = [10, 30, 60, 180, 360, 720];
 
 function checkWhen(when, where, errors) {
   if (when === undefined) return;
@@ -81,6 +82,27 @@ export function validate(cfg) {
       if (!['keep', 'recycle'].includes(x?.action)) e.push(`${w}: "action" must be "keep" or "recycle"`);
       checkWhen(x?.when, w, e);
     });
+
+  const s = cfg.sell;
+  if (s !== undefined) {
+    if (typeof s.enabled !== 'boolean') e.push('sell.enabled must be true or false');
+    for (const kk of ['checkMinutes', 'maxListings', 'minListPrice', 'lookupsPerRun']) if (typeof s[kk] !== 'number') e.push(`sell.${kk} must be a number`);
+    if (typeof s.priceFactor !== 'number' || s.priceFactor <= 0 || s.priceFactor > 2) e.push('sell.priceFactor must be a number like 0.75 (75% of the average sale price)');
+    if (!DURATIONS.includes(s.durationMinutes)) e.push(`sell.durationMinutes must be one of ${DURATIONS.join(', ')}`);
+    if (s.noDataPrice !== null && s.noDataPrice !== undefined && typeof s.noDataPrice !== 'number') e.push('sell.noDataPrice must be a number or null (null = do not sell cards with no sales history)');
+    for (const kk of ['gapMs', 'lookupGapMs']) if (!isRange(s[kk])) e.push(`sell.${kk} must be [min, max] in milliseconds`);
+    if (!['keep', 'sell'].includes(s.default)) e.push('sell.default must be "keep" or "sell"');
+    if (!Array.isArray(s.rules)) e.push('sell.rules must be a list');
+    else
+      s.rules.forEach((r, i) => {
+        const w = `sell.rules[${i}]${r?.name ? ` (${r.name})` : ''}`;
+        if (!r?.name) e.push(`${w}: needs a "name"`);
+        if (!['keep', 'sell'].includes(r?.action)) e.push(`${w}: "action" must be "keep" or "sell"`);
+        checkWhen(r?.when, w, e);
+        if (r?.priceFactor !== undefined && (typeof r.priceFactor !== 'number' || r.priceFactor <= 0 || r.priceFactor > 2)) e.push(`${w}: priceFactor must be a number like 0.75`);
+        if (r?.durationMinutes !== undefined && !DURATIONS.includes(r.durationMinutes)) e.push(`${w}: durationMinutes must be one of ${DURATIONS.join(', ')}`);
+      });
+  }
   return e;
 }
 

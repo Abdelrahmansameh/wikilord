@@ -122,6 +122,13 @@ const SETTINGS = [
     ['packs.maxPerRun', 'num', 'Max packs per check'],
     ['packs.backoffMinutes', 'num', 'Pause after an error (min)'],
   ]],
+  ['Selling (timing)', [
+    ['sell.checkMinutes', 'num', 'Look for cards to list every (min)'],
+    ['sell.lookupsPerRun', 'num', 'Price lookups per check', 'Each unpriced card needs one lookup; results are remembered for 30 minutes.'],
+    ['sell.gapMs', 'range', 'Wait before each listing (ms)'],
+    ['sell.lookupGapMs', 'range', 'Wait between price lookups (ms)'],
+    ['sell.default', 'select', 'When no sell rule matches', '', ['keep', 'sell']],
+  ]],
   ['Recycling', [
     ['recycle.afterPackOpen', 'bool', 'Recycle right after opening a pack'],
     ['recycle.sweepExisting', 'bool', 'Also sweep my whole collection'],
@@ -156,9 +163,22 @@ function money(m) {
       tile('Net change', signed(m.net), m.startBalance == null ? '' : `${m.startBalance} → ${m.balance}`, netCls),
       tile('Earned (recycling)', signed(m.earnedRecycling), `${m.recycledCount} cards`, m.earnedRecycling ? 'good' : ''),
       tile('Spent (cards won)', m.spentOnWon ? '−' + m.spentOnWon : '0', `${m.won} won`, m.spentOnWon ? 'err' : ''),
+      tile('Earned (sales)', signed(m.earnedSales || 0), `${m.soldCount || 0} sold`, m.earnedSales ? 'good' : ''),
       tile('Held in open bids', m.heldInBids, `${m.pending} waiting`),
       tile('Bid results', `${m.won} won / ${m.outbid} outbid`)),
     h('p', { class: 'hint', style: 'margin:0' }, 'Since the bot started. A bid is held until its auction ends; if someone outbids you it is refunded, so only won auctions count as spent. Net change also reflects refunds and anything you do on the site yourself.'));
+}
+
+/** Selling status: listings in use, results, and what the policy would list next. */
+function selling(s) {
+  if (!s) return null;
+  const rows = (s.preview ?? []).map((p) => h('tr', {}, h('td', {}, p.title), h('td', {}, h('span', { class: 'chip' }, p.rarity)), h('td', {}, p.avg ?? 'no history'), h('td', {}, p.price)));
+  return h('section', {},
+    h('h2', {}, 'Selling ', h('span', { class: 'badge' + (s.enabled ? ' live' : '') }, s.enabled ? 'ON' : 'OFF')),
+    h('p', { class: 'hint' }, s.active + '/' + s.max + ' listings in use · ' + (s.listed || 0) + ' listed this session · ' + (s.soldCount || 0) + ' sold for ' + (s.soldRevenue || 0) + ' · list price = ' + Math.round(s.factor * 100) + '% of the average sale price'),
+    rows.length
+      ? h('table', {}, h('thead', {}, h('tr', {}, ['Next candidates (highest price first)', 'Rarity', 'Average sale price', 'Would list at'].map((x) => h('th', {}, x)))), h('tbody', {}, rows))
+      : h('p', { class: 'empty' }, s.enabled ? 'Nothing to list right now (no free slots, or no card matches a sell rule).' : 'Turn selling on and choose your rules on the Sell rules tab.'));
 }
 
 function renderDashboard() {
@@ -180,6 +200,7 @@ function renderDashboard() {
       stat('Wishlist cards', s.wishlistSize), stat('Session valid for', `${s.sessionMinLeft} min`),
       stat('Clock / latency', `${s.clock.offsetMs} ms`, `rtt ${s.clock.rttMs} ms`), stat('Uptime', fmtSec(s.uptimeSec))),
     money(s.money),
+    selling(s.sell),
     h('section', {}, h('h2', {}, 'Upcoming snipes'),
       s.plans.length ? h('table', {}, h('thead', {}, h('tr', {}, ['Card', 'Rarity', 'Bid', 'Rule', 'Fires in', 'Auction ends'].map((x) => h('th', {}, x)))), h('tbody', {}, planRows)) : h('p', { class: 'empty' }, 'Nothing planned. The bot looks for matching auctions continuously.')),
     h('section', {}, h('h2', {}, 'Recent bids'),
@@ -207,9 +228,17 @@ function ruleCard(list, i, kind) {
       set_.size ? (w.rarity = RARITIES.filter((y) => set_.has(y))) : delete w.rarity; markDirty(); } }), x))));
 
   let action;
-  if (kind === 'recycle') {
-    action = h('label', { class: 'f' }, 'Then',
-      h('select', { onchange: (e) => { r.action = e.target.value; markDirty(); } }, ['keep', 'recycle'].map((a) => h('option', { value: a, selected: r.action === a }, a === 'keep' ? 'Keep the card' : 'Recycle the card'))));
+  if (kind === 'recycle' || kind === 'sell') {
+    const verb = kind === 'sell' ? 'sell' : 'recycle';
+    action = [
+      h('label', { class: 'f' }, 'Then',
+        h('select', { onchange: (e) => { r.action = e.target.value; refresh(); } }, ['keep', verb].map((a) => h('option', { value: a, selected: r.action === a }, a === 'keep' ? 'Keep the card' : (kind === 'sell' ? 'Sell the card' : 'Recycle the card'))))),
+      kind === 'sell' && r.action === 'sell' && h('label', { class: 'f' }, 'List at % of average',
+        h('input', { type: 'number', min: '1', max: '200', placeholder: String(Math.round(cfg.sell.priceFactor * 100)), value: r.priceFactor ? Math.round(r.priceFactor * 100) : '', oninput: (e) => { e.target.value === '' ? delete r.priceFactor : (r.priceFactor = Number(e.target.value) / 100); markDirty(); } })),
+      kind === 'sell' && r.action === 'sell' && h('label', { class: 'f' }, 'Listing length',
+        h('select', { onchange: (e) => { e.target.value === '' ? delete r.durationMinutes : (r.durationMinutes = Number(e.target.value)); markDirty(); } },
+          h('option', { value: '' }, 'default'), [[10, '10 min'], [30, '30 min'], [60, '1 hour'], [180, '3 hours'], [360, '6 hours'], [720, '12 hours']].map(([v, l]) => h('option', { value: v, selected: r.durationMinutes === v }, l)))),
+    ];
   } else {
     r.bid ??= { max: 1, increment: 1 };
     action = [
@@ -244,8 +273,22 @@ function ruleCard(list, i, kind) {
 }
 
 function renderRules(kind) {
-  const list = kind === 'bid' ? cfg.rules : cfg.recycle.rules;
-  const head = kind === 'bid'
+  const list = kind === 'bid' ? cfg.rules : kind === 'sell' ? cfg.sell.rules : cfg.recycle.rules;
+  const S = cfg.sell;
+  const numField = (label, get, put, attrs = {}) => h('label', { class: 'f' }, label, h('input', { type: 'number', ...attrs, value: get() ?? '', oninput: (e) => { put(e.target.value === '' ? null : Number(e.target.value)); markDirty(); } }));
+  const head = kind === 'sell'
+    ? h('div', {},
+      h('p', { class: 'hint' }, 'Sells cards by policy: the cards with the highest expected price go on sale first, up to the site limit of 5 listings at a time. Each card is listed at a share of the average price it recently sold for (the figure the site shows when you sell). Cards on sale are never recycled. Rules are checked top to bottom; first match wins.'),
+      h('section', {},
+        h('label', {}, h('input', { type: 'checkbox', checked: S.enabled, onchange: (e) => { S.enabled = e.target.checked; markDirty(); } }), ' Selling is ', h('b', {}, 'enabled'), ' (when off, nothing is listed)'),
+        h('div', { class: 'conds' },
+          numField('List at this % of the average price', () => Math.round(S.priceFactor * 100), (v) => { if (v != null) S.priceFactor = v / 100; }, { min: '1', max: '200' }),
+          h('label', { class: 'f' }, 'Listing length', h('select', { onchange: (e) => { S.durationMinutes = Number(e.target.value); markDirty(); } },
+            [[10, '10 min'], [30, '30 min'], [60, '1 hour'], [180, '3 hours'], [360, '6 hours'], [720, '12 hours']].map(([v, l]) => h('option', { value: v, selected: S.durationMinutes === v }, l)))),
+          numField('Max listings at once (site limit 5)', () => S.maxListings, (v) => { if (v != null) S.maxListings = v; }, { min: '1', max: '5' }),
+          numField('Never list below this price', () => S.minListPrice, (v) => { if (v != null) S.minListPrice = v; }, { min: '1' }),
+          numField('Price when a card has no sales history', () => S.noDataPrice, (v) => { S.noDataPrice = v; }, { placeholder: 'skip these' }))))
+    : kind === 'bid'
     ? h('p', { class: 'hint' }, 'Rules are checked from top to bottom and the first match wins. Leave a condition on "any"/empty to ignore it. Bids always land ~11s before the end.')
     : h('div', {},
       h('p', { class: 'hint' }, 'Recycling is permanent (about +1 balance each). Rules are checked top to bottom; first match wins. Cards in a pending trade are always kept.'),
@@ -303,7 +346,7 @@ function renderConnect() {
 }
 
 /* ---------- shell ---------- */
-const TABS = [['dashboard', 'Dashboard'], ['bid', 'Bid rules'], ['recycle', 'Recycle rules'], ['settings', 'Settings'], ['connect', 'Connect']];
+const TABS = [['dashboard', 'Dashboard'], ['bid', 'Bid rules'], ['recycle', 'Recycle rules'], ['sell', 'Sell rules'], ['settings', 'Settings'], ['connect', 'Connect']];
 function drawTabs() {
   $('#tabs').replaceChildren(...TABS.map(([id, label]) => h('button', { class: tab === id ? 'on' : '', onclick: () => { tab = id; draw(); } }, label)));
 }
@@ -313,7 +356,7 @@ function drawView() {
   if (tab === 'dashboard') { v.replaceChildren(renderDashboard()); const l = $('#log'); if (l) l.scrollTop = l.scrollHeight; }
   else if (tab === 'connect') v.replaceChildren(renderConnect());
   else if (!cfg) v.replaceChildren(h('p', { class: 'empty' }, 'Loading settings…'));
-  else v.replaceChildren(tab === 'bid' ? renderRules('bid') : tab === 'recycle' ? renderRules('recycle') : renderSettings());
+  else v.replaceChildren(tab === 'bid' ? renderRules('bid') : tab === 'recycle' ? renderRules('recycle') : tab === 'sell' ? renderRules('sell') : renderSettings());
 }
 
 async function poll() {

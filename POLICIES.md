@@ -37,7 +37,7 @@ Add `"enabled": false` to switch a rule off without deleting it.
 { "name": "wishlist", "when": { "wishlist": true }, "bid": { "max": 9, "increment": 1 } }
 { "name": "never-commons", "when": { "rarity": ["C"] }, "skip": true }
 ```
-- `bid.max`: never bid above this. `bid.increment`: how much above the current price (first bid = starting price).
+- `bid.max`: never bid above this. `bid.increment`: how much above the current price (first bid = starting price). The site requires each bid to be at least **10% above the current price, rounded up, and at least +1** (price 20 needs 22); the bot always bids at least that. If the server still says "too low", the bot immediately retries at the minimum it names, as long as your `max` allows.
 - `"skip": true`: never bid on matches.
 - Cards you own, your own listings, and auctions you already lead are always skipped (`global.skipOwned`).
 
@@ -46,6 +46,27 @@ Add `"enabled": false` to switch a rule off without deleting it.
 Safety limits (`global`): `dailySpendCap`, `maxSnipesPerHour`, `reserveBalance` (balance to always keep), `minGapBetweenBidsMs`.
 
 Timing (`timing`): `targetRemainingMs` is when the bid should land before the end (11000 = 11 s, must stay > 10000 or the auction extends). `extraBidLatencyMs` shifts the bid earlier if it lands too late (the log says so when an auction gets extended).
+
+## Selling policy (`sell`)
+
+Sells cards by rules, like recycling but with action `sell` or `keep`. **Off by default**: turn on `sell.enabled` (Sell rules tab) when the rules suit you.
+
+- **Highest price first.** The bot prices every card that matches a sell rule and lists the ones with the highest price, up to the site's limit of 5 listings at a time (`sell.maxListings`, it counts the listings you already have).
+- **Price = a share of the average sale price.** The site shows an average sale price for a card at each rarity when you sell it; the bot reads the same figure and lists at `sell.priceFactor` of it (`0.75` = 75%, rounded). A rule can override it with its own `priceFactor`.
+- Cards with **no sales history** at their rarity are skipped unless you set `sell.noDataPrice` (a fixed list price). Nothing is listed below `sell.minListPrice`.
+- `sell.durationMinutes` is the listing length: 10, 30, 60, 180, 360 or 720 (a rule can override it).
+- A card that is up for sale is **never recycled**, and cards in a pending trade are never sold.
+- The bot checks every `sell.checkMinutes` (randomised a little). Sales are counted on the dashboard ("Earned (sales)").
+- Default rules: keep wishlist, shiny, starred and tagged cards; sell `L`, `UR` and `SR`.
+- Not automated (yet): cancelling or re-pricing your existing listings. The site itself lowers the start price of listings that don't sell.
+
+```json
+"sell": { "enabled": true, "priceFactor": 0.75, "durationMinutes": 60, "minListPrice": 5,
+  "rules": [
+    { "name": "keep-wishlist", "when": { "wishlist": true }, "action": "keep" },
+    { "name": "sell-good-cards", "when": { "rarity": ["UR", "SR"] }, "action": "sell", "priceFactor": 0.8 }
+  ] }
+```
 
 ## Recycle policy (`recycle`)
 

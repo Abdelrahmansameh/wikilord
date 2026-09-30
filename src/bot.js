@@ -3,6 +3,7 @@ import { Session } from './http.js';
 import { calibrate } from './clock.js';
 import { decide, describe, plain } from './rules.js';
 import { startPacks } from './packs.js';
+import { startSelling } from './sell.js';
 import { loadConfig, watchConfig } from './config.js';
 import { startUI } from './ui.js';
 
@@ -35,7 +36,8 @@ const log = (...a) => {
   if (logRing.length > 400) logRing.shift();
 };
 const control = { paused: false };
-const stats = { bidsOk: 0, bidsFailed: 0, packs: 0, recycled: 0, earned: 0, won: 0, lost: 0, wonSpent: 0 };
+const stats = { bidsOk: 0, bidsFailed: 0, packs: 0, recycled: 0, earned: 0, won: 0, lost: 0, wonSpent: 0, listed: 0, soldCount: 0, soldRevenue: 0 };
+const sellInfo = { active: 0, max: 5, preview: [], lastRunAt: null };
 const pendingBids = new Map(); // auction id -> { title, amount } for bids whose auction has not finished
 let startBalance = null;
 const startedAt = Date.now();
@@ -119,13 +121,13 @@ async function getAuction(id) {
   throw new Error(`getAuction HTTP ${r.status} ${r.text.slice(0, 120)}`);
 }
 
-function budgetOk(amount) {
+function budgetOk(amount, { skipGap = false } = {}) {
   const day = new Date().toISOString().slice(0, 10);
   if (spentToday.day !== day) spentToday = { day, amount: 0 };
   const now = Date.now();
   while (recentBids.length && now - recentBids[0] > 3600_000) recentBids.shift();
   if (recentBids.length >= cfg.global.maxSnipesPerHour) return 'hourly snipe cap';
-  if (now - lastBidAt < cfg.global.minGapBetweenBidsMs) return 'min gap between bids';
+  if (!skipGap && now - lastBidAt < cfg.global.minGapBetweenBidsMs) return 'min gap between bids';
   if (spentToday.amount + amount > cfg.global.dailySpendCap) return 'daily spend cap';
   if (balance !== null && amount > balance - cfg.global.reserveBalance) return `balance ${balance} (reserve ${cfg.global.reserveBalance})`;
   return null;
@@ -288,7 +290,17 @@ async function placeBid(a, decision, fireAt, { counter = false } = {}) {
   }
   lastBidAt = sentLocal;
   recentBids.push(sentLocal);
-  const r = await session.request('POST', `/api/marketplace/${a.id}/bid`, { json: { amount: decision.amount } });
+  let r = await session.request('POST', `/api/marketplace/${a.id}/bid`, { json: { amount: decision.amount } });
+  // "bid too low": the server says the minimum. Retry at once (still well before the last 10 s) if the rule's max allows it.
+  if (r.status === 409 && r.json?.code === 'bid_too_low' && Number.isFinite(r.json.min)) {
+    const max = cfg.rules.find((x) => x.name === decision.rule)?.bid?.max ?? 0;
+    const why2 = r.json.min > max ? `minimum ${r.json.min} is above this rule's max ${max}` : budgetOk(r.json.min, { skipGap: true });
+    if (!why2) {
+      log(`bid ${decision.amount} was too low (minimum ${r.json.min}); retrying at ${r.json.min}`);
+      decision = { ...decision, amount: r.json.min };
+      r = await session.request('POST', `/api/marketplace/${a.id}/bid`, { json: { amount: decision.amount } });
+    } else log(`bid too low and not retried: ${why2}`);
+  }
   const ok = r.status === 200 && r.json?.current_bid !== undefined;
   if (ok) {
     balance = r.json.bidder_balance ?? balance;
@@ -367,11 +379,14 @@ async function main() {
           earnedRecycling: stats.earned,
           recycledCount: stats.recycled,
           spentOnWon: stats.wonSpent,
+          earnedSales: stats.soldRevenue,
+          soldCount: stats.soldCount,
           won: stats.won,
           outbid: stats.lost,
           pending: pendingBids.size,
           heldInBids: [...pendingBids.values()].reduce((s, p) => s + p.amount, 0),
         },
+        sell: { enabled: cfg.sell.enabled, active: sellInfo.active, max: sellInfo.max, listed: stats.listed, soldCount: stats.soldCount, soldRevenue: stats.soldRevenue, factor: cfg.sell.priceFactor, preview: sellInfo.preview, lastRunAt: sellInfo.lastRunAt },
         spentToday: spentToday.amount,
         dailySpendCap: cfg.global.dailySpendCap,
         stats,
@@ -409,6 +424,7 @@ async function main() {
       return gained;
     },
   });
+  startSelling({ session, cfg, log, dry: DRY, getWishlist: () => wishlist, control, stats, info: sellInfo });
   setInterval(() => refreshBalance().catch(() => {}), 5 * 60_000);
   setInterval(() => refreshWishlist().catch((e) => log(e.message)), 15_000);
   setInterval(() => poll().catch((e) => { log('poll error:', e.message); if (/token refresh failed/.test(e.message)) sessionProblem = e.message; }), T.pollSeconds * 1000);

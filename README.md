@@ -4,6 +4,7 @@ Autonomous helper for [wiki-masters.com](https://www.wiki-masters.com): snipes a
 
 - **Sniping:** bids land ~11 s before an auction ends (the site extends auctions for bids in the last 10 s). The bot measures the server clock offset and latency, re-checks the auction just before firing, and reports when a bid extended an auction.
 - **Rules:** which auctions to bid on and which cards to recycle are plain rules (rarity, wishlist, pageviews, ATK/DEF, regex...). See [POLICIES.md](POLICIES.md).
+- **Selling:** lists your best cards (highest expected price first, up to the site's 5 listings) at a configurable share, default 75%, of their average sale price. Off until you enable it.
 - **Packs and recycling:** opens packs as they become available and recycles by policy, with a random ~4 s wait before each call.
 - **Dashboard:** http://localhost:8787 while the bot runs. Status, upcoming snipes, live log, rule editor, pause button. Local only.
 - **Hot reload:** edit `config.json` (or use the dashboard) and it applies within seconds; invalid edits are rejected.

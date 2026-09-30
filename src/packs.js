@@ -1,4 +1,5 @@
 import { decideRecycle, ownedFacts } from './rules.js';
+import { fetchMyListings } from './sell.js';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const rnd = ([a, b]) => a + Math.random() * (b - a);
@@ -63,6 +64,13 @@ export function startPacks({ session, cfg, log, dry, getWishlist, control = { pa
       const items = [];
       let seen = 0;
       let pendingTrade = new Set();
+      // a card that is up for sale stays in the collection list: never recycle it
+      let listed;
+      try {
+        listed = new Set((await fetchMyListings(session)).selling.map((a) => a.card_id));
+      } catch (err) {
+        return void log(`sweep: could not read my listings (${err.message}); skipping this run to be safe`);
+      }
       for (let page = 0; page < 50; page++) {
         const r = await session.request('GET', `/api/my-collection?sort=rarity&page=${page}&stats=0`);
         if (r.status !== 200 || !Array.isArray(r.json?.collection)) return void log(`sweep: collection fetch failed HTTP ${r.status}`);
@@ -70,7 +78,7 @@ export function startPacks({ session, cfg, log, dry, getWishlist, control = { pa
         if (!r.json.collection.length) break;
         seen += r.json.collection.length;
         for (const e of r.json.collection) {
-          if (pendingTrade.has(e.id) || pendingTrade.has(e.card_id)) continue;
+          if (pendingTrade.has(e.id) || pendingTrade.has(e.card_id) || listed.has(e.card_id)) continue;
           const ok = shouldRecycle(ownedFacts({ card: e.card, cardId: e.card_id, shiny: e.is_shiny, starred: e.starred, tagged: (e.tags ?? []).length > 0 }));
           if (ok) items.push({ id: e.id, label: `${e.card.wikipedia_title} [${e.card.rarity}]` });
         }
