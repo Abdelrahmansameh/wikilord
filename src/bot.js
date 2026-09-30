@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import { Session } from './http.js';
 import { calibrate } from './clock.js';
-import { bidRuleMatch, decide, describe, plain } from './rules.js';
+import { auctionFacts, bidRuleMatch, decide, describe, matches, plain } from './rules.js';
 import { startPacks } from './packs.js';
 import { startSelling } from './sell.js';
 import { cardEvent, wonCardIds } from './history.js';
@@ -163,13 +163,15 @@ async function wishlistAuctions() {
       if (!r.json.hasMore) break;
     }
   };
-  // Keyword rules ("title contains") are few and matter most: search them on EVERY scan, before the wishlist.
+  // Rules with a search ("search", or "title contains") are few and matter most: search them on EVERY scan,
+  // before the wishlist. The site's search covers each card's title AND category, so "jeu vidéo" finds video games.
   const keywords = new Set();
   for (const rule of cfg.rules) {
-    const kw = rule.enabled !== false && rule.when?.titleContains;
+    if (rule.enabled === false || rule.skip) continue;
+    const kw = rule.search || rule.when?.titleContains;
     if (kw && !keywords.has(kw)) {
       keywords.add(kw);
-      await searchPage(kw, (a) => plain(a.card?.wikipedia_title).includes(plain(kw)), 3);
+      await searchPage(kw, (a) => matches(rule.when, auctionFacts(a), wishlist), 3);
     }
   }
   // Wishlist titles: a time-budgeted slice per scan, continuing where the last scan stopped.

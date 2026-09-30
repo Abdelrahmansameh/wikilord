@@ -61,6 +61,7 @@ export function validate(cfg) {
         if (typeof r?.bid?.max !== 'number') e.push(`${w}: needs bid.max (a number) or "skip": true`);
         if (r?.bid?.increment !== undefined && typeof r.bid.increment !== 'number') e.push(`${w}: bid.increment must be a number`);
         if (r?.bid?.counters !== undefined && typeof r.bid.counters !== 'number') e.push(`${w}: bid.counters must be a number`);
+        if (r?.search !== undefined && (typeof r.search !== 'string' || !r.search.trim())) e.push(`${w}: search must be some text, e.g. "jeu vidéo"`);
       }
     });
 

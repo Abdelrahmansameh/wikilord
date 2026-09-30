@@ -255,6 +255,8 @@ function ruleCard(list, i, kind) {
         h('input', { type: 'number', value: r.bid.max, oninput: (e) => { r.bid.max = Number(e.target.value); markDirty(); } })),
       !r.skip && h('label', { class: 'f' }, 'Raise by',
         h('input', { type: 'number', value: r.bid.increment ?? 1, oninput: (e) => { r.bid.increment = Number(e.target.value); markDirty(); } })),
+      !r.skip && h('label', { class: 'f' }, 'Also search the marketplace for',
+        h('input', { type: 'text', placeholder: 'e.g. jeu vidéo', value: r.search ?? '', oninput: (e) => { e.target.value.trim() === '' ? delete r.search : (r.search = e.target.value); markDirty(); } })),
       !r.skip && h('label', { class: 'f' }, 'Counter-bids if outbid',
         h('input', { type: 'number', min: '0', placeholder: 'default', value: r.bid.counters ?? '', oninput: (e) => { e.target.value === '' ? delete r.bid.counters : (r.bid.counters = Number(e.target.value)); markDirty(); } })),
     ];
