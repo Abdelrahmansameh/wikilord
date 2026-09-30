@@ -35,8 +35,8 @@ export function startUI({ port, getState, control, log, session, onConnected, ge
       if (req.method === 'GET' && url.pathname === '/api/values') return send(res, 200, getValues());
       if (req.method === 'POST' && url.pathname === '/api/values/refresh') return send(res, 200, refreshValues());
       if (req.method === 'POST' && url.pathname === '/api/sell') {
-        const { cardId, factor } = JSON.parse((await readBody(req)) || '{}');
-        const r = await sellCard(cardId, { factor });
+        const { cardId, factor, force } = JSON.parse((await readBody(req)) || '{}');
+        const r = await sellCard(cardId, { factor, force: force === true });
         return send(res, r.ok ? 200 : 400, r);
       }
       if (req.method === 'GET' && url.pathname === '/api/cards-history') {

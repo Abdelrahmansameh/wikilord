@@ -111,11 +111,12 @@ export function startValues({ session, log, control = {}, isProtected = () => nu
    * Put one owned card on sale, only when asked from the dashboard. Uses the sell settings (price share and
    * listing length). Refuses protected cards, cards without a price, and when all listing slots are used.
    */
-  async function sell(cardId, { factor } = {}) {
+  async function sell(cardId, { factor, force = false } = {}) {
     const c = owned.find((x) => x.cardId === cardId);
     if (!c) return { ok: false, error: 'card not found in your collection (it may have been recycled or sold)' };
+    // protected cards are only sold when you explicitly ask for that card (force), never automatically
     const why = isProtected(factsOf(c));
-    if (why) return { ok: false, error: `this card is protected (${why})` };
+    if (why && !force) return { ok: false, error: `this card is protected (${why})` };
     const average = store[c.cardId]?.summary?.[c.rarity]?.average;
     if (average == null) return { ok: false, error: 'no sales history for this card yet, so there is no price to use' };
     const share = Number.isFinite(factor) && factor > 0 && factor <= 2 ? factor : cfg?.sell?.priceFactor ?? 0.75;
@@ -129,7 +130,7 @@ export function startValues({ session, log, control = {}, isProtected = () => nu
     const r = await session.request('POST', '/api/marketplace', { json: { card_id: c.userCardId, base_amount: price, duration_minutes: minutes } });
     if (r.status !== 201 || !r.json?.auction_id) return { ok: false, error: `the site refused (HTTP ${r.status}): ${r.json?.error ?? r.text.slice(0, 120)}` };
     listedNow.set(c.cardId, Date.now() + (minutes + 3) * 60_000); // after that it shows as sellable again (e.g. unsold)
-    cardEvent('listed', { cardId: c.cardId, title: c.title, rarity: c.rarity, price, average, minutes, rule: 'manual (Value tab)' });
+    cardEvent('listed', { cardId: c.cardId, title: c.title, rarity: c.rarity, price, average, minutes, rule: force && why ? `manual, protection overridden (${why})` : 'manual (Value tab)' });
     log(`LISTED ${c.title} [${c.rarity}] for ${price} (avg ${average}, ${minutes} min) from the Value tab`);
     return { ok: true, price, minutes, slotsLeft: max - selling.length - 1 };
   }
