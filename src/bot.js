@@ -4,6 +4,7 @@ import { calibrate } from './clock.js';
 import { auctionFacts, bidRuleMatch, decide, describe, matches, plain } from './rules.js';
 import { startPacks } from './packs.js';
 import { startSelling } from './sell.js';
+import { startValues } from './values.js';
 import { bidOnTitles, cardEvent, wonCardIds } from './history.js';
 import { loadConfig, watchConfig } from './config.js';
 import { startUI } from './ui.js';
@@ -23,6 +24,7 @@ const recentBids = []; // local timestamps of sent bids
 let clock = { offsetMs: 0, rttMs: 300, uncertaintyMs: 1000 };
 let balance = null;
 let sessionProblem = null;
+let getValues = () => ({ cards: [], owned: 0, priced: 0, pending: 0, noHistory: 0, totalValue: 0 });
 let wishlist = new Set();
 let wishlistTitles = [];
 let spentToday = { day: '', won: 0 }; // won = price of auctions won today; refunded bids never count
@@ -502,6 +504,7 @@ async function main() {
       control,
       log,
       session,
+      getValues: () => getValues(),
       onConnected: () => {
         sessionProblem = null;
         if (!cfg.myUserId) cfg.myUserId = session.readAuth()?.user?.id ?? '';
@@ -577,6 +580,7 @@ async function main() {
     },
   });
   startSelling({ session, cfg, log, dry: DRY, getWishlist: () => wishlist, control, stats, info: sellInfo, isProtected: protectedBy });
+  getValues = startValues({ session, log, control, isProtected: protectedBy });
   setInterval(() => refreshBalance().catch(() => {}), 5 * 60_000);
   setInterval(() => (siteBusy() ? null : refreshWishlist().catch((e) => log(e.message))), 30_000);
   setInterval(() => poll().catch((e) => { log('poll error:', e.message); if (/token refresh failed/.test(e.message)) sessionProblem = e.message; }), T.pollSeconds * 1000);

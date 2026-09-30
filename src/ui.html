@@ -369,6 +369,38 @@ async function loadCards() {
   }
 }
 
+/* ---------- value: rough market value of owned cards ---------- */
+async function loadValues() {
+  window.__valuesBusy = true;
+  try {
+    const r = await api('/api/values');
+    window.__valuesAt = Date.now();
+    if (!r.ok || tab !== 'value' || !$('#valuebox')) return;
+    const d = r.data;
+    const ago = (t) => { if (!t) return 'not yet'; const m = Math.round((Date.now() - t) / 60000); return m < 60 ? m + ' min ago' : Math.round(m / 60) + ' h ago'; };
+    const tile = (label, n, sub) => h('div', { class: 'stat' }, h('b', {}, n), h('span', {}, label + (sub ? ' · ' + sub : '')));
+    const rows = d.cards.map((c) => h('tr', {},
+      h('td', {}, c.title + (c.shiny ? ' ★' : '') + (c.count > 1 ? ' ×' + c.count : '')),
+      h('td', {}, h('span', { class: 'chip' }, c.rarity ?? '')),
+      h('td', {}, c.average != null ? h('b', {}, String(c.average)) : h('span', { class: 'hint' }, c.checkedAt ? 'no sales yet' : 'checking…')),
+      h('td', {}, c.average != null ? String(Math.round(c.average * 0.75)) : ''),
+      h('td', { class: 'hint' }, c.protectedBy ?? ''),
+      h('td', { class: 'hint' }, ago(c.checkedAt))));
+    $('#valuebox').replaceChildren(
+      h('p', { class: 'hint' }, 'A rough idea of what your cards are worth: the average price each card has sold for on the marketplace, at its rarity. The bot checks one card every few seconds at first, then refreshes slowly (each value can be up to about 12 hours old).'),
+      h('div', { class: 'grid' },
+        tile('Estimated collection value', Math.round(d.totalValue)),
+        tile('Cards owned', d.owned),
+        tile('Priced', d.priced, d.noHistory ? d.noHistory + ' with no sales yet' : ''),
+        tile('Still checking', d.pending)),
+      rows.length
+        ? h('table', {}, h('thead', {}, h('tr', {}, ['Card', 'Rarity', 'Average sale price', '75% (sell price)', 'Protected', 'Checked'].map((x) => h('th', {}, x)))), h('tbody', {}, rows))
+        : h('p', { class: 'empty' }, 'Reading your collection… values appear here within a minute or two.'));
+  } finally {
+    window.__valuesBusy = false;
+  }
+}
+
 /* ---------- connect (login) ---------- */
 function renderConnect() {
   const status = h('p', { id: 'connectmsg', class: 'hint' });
@@ -405,7 +437,7 @@ function renderConnect() {
 }
 
 /* ---------- shell ---------- */
-const TABS = [['dashboard', 'Dashboard'], ['cards', 'Cards'], ['bid', 'Bid rules'], ['recycle', 'Recycle rules'], ['sell', 'Sell rules'], ['settings', 'Settings'], ['connect', 'Connect']];
+const TABS = [['dashboard', 'Dashboard'], ['cards', 'Cards'], ['value', 'Value'], ['bid', 'Bid rules'], ['recycle', 'Recycle rules'], ['sell', 'Sell rules'], ['settings', 'Settings'], ['connect', 'Connect']];
 function drawTabs() {
   $('#tabs').replaceChildren(...TABS.map(([id, label]) => h('button', { class: tab === id ? 'on' : '', onclick: () => { tab = id; draw(); } }, label)));
 }
@@ -415,6 +447,7 @@ function drawView() {
   if (tab === 'dashboard') { v.replaceChildren(renderDashboard()); const l = $('#log'); if (l) l.scrollTop = l.scrollHeight; }
   else if (tab === 'connect') v.replaceChildren(renderConnect());
   else if (tab === 'cards') { v.replaceChildren(renderCards()); loadCards(); }
+  else if (tab === 'value') { v.replaceChildren(h('div', { id: 'valuebox' }, h('p', { class: 'empty' }, 'Loading…'))); loadValues(); }
   else if (!cfg) v.replaceChildren(h('p', { class: 'empty' }, 'Loading settings…'));
   else v.replaceChildren(tab === 'bid' ? renderRules('bid') : tab === 'recycle' ? renderRules('recycle') : tab === 'sell' ? renderRules('sell') : renderSettings());
 }
@@ -429,6 +462,7 @@ async function poll() {
     m.className = 'badge ' + (state.paused ? 'paused' : state.mode === 'live' ? 'live' : 'dry');
     $('#pause').textContent = state.paused ? 'Resume' : 'Pause';
     if (tab === 'cards' && !window.__cardsBusy) loadCards();
+    if (tab === 'value' && !window.__valuesBusy && Date.now() - (window.__valuesAt || 0) > 15000) loadValues();
     if (tab === 'dashboard') { const l = $('#log'); const stick = !l || l.scrollTop + l.clientHeight >= l.scrollHeight - 30; drawView(); if (stick) { const n = $('#log'); if (n) n.scrollTop = n.scrollHeight; } }
   } else { $('#mode').textContent = 'offline'; $('#mode').className = 'badge paused'; }
 }
