@@ -418,7 +418,7 @@ async function loadValues() {
         tile('Cards owned', d.owned),
         tile('Priced', d.priced, d.noHistory ? d.noHistory + ' with no sales yet' : ''),
         tile('Still checking', d.pending)),
-      h('div', { style: 'margin-bottom:12px' }, h('button', { onclick: async (e) => { e.currentTarget.disabled = true; e.currentTarget.textContent = 'Refreshing… (a few seconds per card)'; await api('/api/values/refresh', { method: 'POST', body: '{}' }); setTimeout(loadValues, 2000); } }, 'Refresh all prices')),
+      h('div', { style: 'margin-bottom:12px' }, h('button', { onclick: async (e) => { e.currentTarget.disabled = true; e.currentTarget.textContent = 'Refreshing at the normal pace (about 25 s per card)'; await api('/api/values/refresh', { method: 'POST', body: '{}' }); setTimeout(loadValues, 2000); } }, 'Refresh all prices')),
       rows.length
         ? h('table', {}, h('thead', {}, h('tr', {}, ['Card', 'Rarity', 'Average sale price', '75% (sell price)', 'Protected', 'Checked', ''].map((x) => h('th', {}, x)))), h('tbody', {}, rows))
         : h('p', { class: 'empty' }, 'Reading your collection… values appear here within a minute or two.'));

@@ -17,7 +17,7 @@ export function startValues({ session, log, control = {}, isProtected = () => nu
   } catch {}
   let owned = []; // [{ cardId, title, rarity, shiny, count, pageviews, category }]
   let ownedAt = 0;
-  let rushing = false; // set by "Refresh all prices": re-check everything at the quick pace
+  let rushing = false; // set by "Refresh all prices" (re-checks everything at the normal pace)
   const save = () => {
     try {
       fs.writeFileSync(FILE, JSON.stringify(store));
@@ -68,7 +68,8 @@ export function startValues({ session, log, control = {}, isProtected = () => nu
         await lookup(next);
         save();
         // quick first pass (a few seconds per card), then a slow pace for refreshes
-        const firstPass = rushing || owned.some((c) => !store[c.cardId]);
+        // quick only for cards never priced; refreshes (including "Refresh all prices") go at the normal slow pace
+        const firstPass = owned.some((c) => !store[c.cardId]);
         await sleep(firstPass ? 3000 + Math.random() * 2000 : 20_000 + Math.random() * 10_000);
       } catch (e) {
         log('values:', e.message);
@@ -138,7 +139,7 @@ export function startValues({ session, log, control = {}, isProtected = () => nu
     for (const k of Object.keys(store)) store[k].at = 0;
     rushing = true;
     ownedAt = 0; // re-read the collection too
-    log(`values: refreshing all prices (${owned.length} cards, a few seconds each)`);
+    log(`values: refreshing all prices (${owned.length} cards, about 25 s each)`);
     return { ok: true, cards: owned.length };
   }
 
