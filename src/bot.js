@@ -153,11 +153,30 @@ let searchCursor = 0;
 async function wishlistAuctions() {
   // The site's search does not match the "(qualifier)" part of a title, so search on the text before it.
   // query text -> which results to keep. Wishlist titles keep wishlist cards; a rule's "titleContains" keeps titles containing it.
-  const searches = new Map();
-  for (const t of wishlistTitles) searches.set(t.split('(')[0].trim() || t, (a) => wishlist.has(a.card_id));
+  const searchPage = async (q, keep, maxPages) => {
+    for (let p = 1; p <= maxPages; p++) {
+      await control.quiet();
+      const r = await session.request('GET', `/api/marketplace?page=${p}&limit=50&sort=ending_soon&q=${encodeURIComponent(q)}`);
+      noteLatency(r.t1 - r.t0);
+      if (r.status !== 200 || !r.json?.auctions) break;
+      for (const a of r.json.auctions) if (keep(a)) searchResults.set(a.id, { a, at: Date.now() });
+      if (!r.json.hasMore) break;
+    }
+  };
+  // Keyword rules ("title contains") are few and matter most: search them on EVERY scan, before the wishlist.
+  const keywords = new Set();
   for (const rule of cfg.rules) {
     const kw = rule.enabled !== false && rule.when?.titleContains;
-    if (kw && !searches.has(kw)) searches.set(kw, (a) => plain(a.card?.wikipedia_title).includes(plain(kw)));
+    if (kw && !keywords.has(kw)) {
+      keywords.add(kw);
+      await searchPage(kw, (a) => plain(a.card?.wikipedia_title).includes(plain(kw)), 3);
+    }
+  }
+  // Wishlist titles: a time-budgeted slice per scan, continuing where the last scan stopped.
+  const searches = new Map();
+  for (const t of wishlistTitles) {
+    const q = t.split('(')[0].trim() || t;
+    if (!keywords.has(q)) searches.set(q, (a) => wishlist.has(a.card_id));
   }
   const queries = [...searches.keys()];
   const budgetMs = (T.searchBudgetSeconds ?? 20) * 1000;
