@@ -81,6 +81,21 @@ export function decide(cfg, a, myUserId, wishlist = new Set()) {
   return { action: 'skip', reason: 'no rule matched' };
 }
 
+/**
+ * Name of the first enabled bid rule whose card conditions this owned card meets, else null. Such cards are
+ * ones the bot would bid on, so it never sells or recycles them. Price conditions are ignored (an owned card has
+ * no auction price), and a rule left with no other condition is ignored so it cannot protect everything.
+ */
+export function bidRuleMatch(cfg, facts, wishlist = new Set()) {
+  for (const rule of cfg.rules) {
+    if (rule.enabled === false || rule.skip) continue;
+    const { minPrice, maxCurrentPrice, ...when } = rule.when ?? {};
+    if (!Object.keys(when).length) continue;
+    if (matches(when, facts, wishlist)) return rule.name;
+  }
+  return null;
+}
+
 /** Returns { action: 'recycle' | 'keep', rule }. First matching rule wins, otherwise recycle.default. */
 export function decideRecycle(rcfg, facts, wishlist = new Set()) {
   for (const rule of rcfg.rules) {

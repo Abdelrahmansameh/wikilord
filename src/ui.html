@@ -103,7 +103,9 @@ const SETTINGS = [
     ['timing.preCheckLeadMs', 'num', 'Re-check the auction this long before firing (ms)'],
     ['timing.horizonMinutes', 'num', 'Plan non-wishlist bids this far ahead (min)'],
     ['timing.maxPages', 'num', 'Auction pages scanned per poll'],
-    ['timing.pollSeconds', 'num', 'Poll interval (s)', 'Restart needed.'],
+    ['timing.pollSeconds', 'num', 'Poll interval (s)', 'How often the bot scans the auctions ending soonest. Restart needed.'],
+    ['timing.searchBudgetSeconds', 'num', 'Wishlist / keyword search time per scan (s)', 'Each wishlist card and keyword rule is one heavy search. The bot works through them in slices of this many seconds per scan, so a slow site means fewer per scan, not more load.'],
+    ['timing.scanBudgetSeconds', 'num', 'Time limit for the ending-soon scan (s)'],
   ]],
   ['Safety limits', [
     ['global.dailySpendCap', 'num', 'Daily spend cap', 'Counts auctions you won today plus bids still held. Bids you are outbid on (and get refunded) do not count. Resets at midnight UTC and when the bot restarts.'],
@@ -314,6 +316,57 @@ function renderSettings() {
   }))));
 }
 
+/* ---------- cards: lifetime history of every card event ---------- */
+const CARD_EVENTS = {
+  pack: ['Opened in a pack', ''],
+  won: ['Bought (won bid)', 'good'],
+  recycled: ['Recycled', ''],
+  listed: ['Listed for sale', ''],
+  sold: ['Sold', 'good'],
+};
+const cardsFilter = { type: '', q: '' };
+
+function renderCards() {
+  const box = h('div', { id: 'cardsbox' });
+  const chips = h('div', { id: 'cardchips', style: 'display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px' });
+  const search = h('input', { type: 'text', placeholder: 'Search by card name…', value: cardsFilter.q, style: 'max-width:280px', oninput: (e) => { cardsFilter.q = e.target.value; loadCards(); } });
+  box.append(
+    h('p', { class: 'hint' }, 'Every card the bot has seen: opened in packs, won at auction, recycled, put on sale and sold. This is a lifetime log kept on this computer (it starts from when this feature was added). Cards the bot won by bidding, and cards that match a bid rule, are never sold or recycled.'),
+    h('div', { id: 'cardsum', class: 'grid' }), chips, h('div', { style: 'margin-bottom:10px' }, search), h('div', { id: 'cardtable' }));
+  return box;
+}
+
+async function loadCards() {
+  window.__cardsBusy = true;
+  try {
+    const qs = new URLSearchParams({ limit: '500' });
+    if (cardsFilter.type) qs.set('type', cardsFilter.type);
+    if (cardsFilter.q) qs.set('q', cardsFilter.q);
+    const r = await api('/api/cards-history?' + qs);
+    if (!r.ok || tab !== 'cards' || !$('#cardtable')) return;
+    const { events, counts, sums, total } = r.data;
+    const tile = (label, n, sub) => h('div', { class: 'stat' }, h('b', {}, n), h('span', {}, label + (sub ? ' · ' + sub : '')));
+    $('#cardsum').replaceChildren(
+      tile('Opened in packs', counts.pack ?? 0), tile('Bought', counts.won ?? 0, '−' + (sums.won ?? 0)),
+      tile('Recycled', counts.recycled ?? 0, '+' + (sums.recycled ?? 0)), tile('Listed for sale', counts.listed ?? 0), tile('Sold', counts.sold ?? 0, '+' + (sums.sold ?? 0)));
+    $('#cardchips').replaceChildren(...[['', 'All'], ...Object.entries(CARD_EVENTS).map(([k, v]) => [k, v[0]])].map(([k, label]) =>
+      h('button', { class: cardsFilter.type === k ? 'primary' : '', onclick: () => { cardsFilter.type = k; loadCards(); } }, label + (k ? ' (' + (counts[k] ?? 0) + ')' : ''))));
+    const rows = events.map((e) => {
+      const [label, cls] = CARD_EVENTS[e.type] ?? [e.type, ''];
+      const amount = e.type === 'recycled' ? (e.gained ? '+' + e.gained : '') : e.type === 'won' ? '−' + (e.price ?? '') : e.type === 'sold' ? '+' + (e.price ?? '') : e.type === 'listed' ? (e.price ?? '') : '';
+      const note = [e.wishlist ? 'on wishlist' : '', e.rule ? 'rule: ' + e.rule : '', e.average != null ? 'avg ' + e.average : ''].filter(Boolean).join(' · ');
+      return h('tr', {}, h('td', {}, new Date(e.at).toLocaleString()), h('td', {}, h('span', { class: cls === 'good' ? 'good' : '' }, label)),
+        h('td', {}, e.title ?? e.cardId ?? ''), h('td', {}, h('span', { class: 'chip' }, e.rarity ?? '')), h('td', {}, amount), h('td', { class: 'hint' }, note));
+    });
+    $('#cardtable').replaceChildren(rows.length
+      ? h('table', {}, h('thead', {}, h('tr', {}, ['When', 'Event', 'Card', 'Rarity', 'Coins', 'Note'].map((x) => h('th', {}, x)))), h('tbody', {}, rows),
+        ...(total > events.length ? [h('p', { class: 'hint' }, 'Showing the latest ' + events.length + ' of ' + total + ' events.')] : []))
+      : h('p', { class: 'empty' }, 'Nothing here yet. Events are recorded from now on as the bot opens packs, wins auctions, recycles and sells.'));
+  } finally {
+    window.__cardsBusy = false;
+  }
+}
+
 /* ---------- connect (login) ---------- */
 function renderConnect() {
   const status = h('p', { id: 'connectmsg', class: 'hint' });
@@ -350,7 +403,7 @@ function renderConnect() {
 }
 
 /* ---------- shell ---------- */
-const TABS = [['dashboard', 'Dashboard'], ['bid', 'Bid rules'], ['recycle', 'Recycle rules'], ['sell', 'Sell rules'], ['settings', 'Settings'], ['connect', 'Connect']];
+const TABS = [['dashboard', 'Dashboard'], ['cards', 'Cards'], ['bid', 'Bid rules'], ['recycle', 'Recycle rules'], ['sell', 'Sell rules'], ['settings', 'Settings'], ['connect', 'Connect']];
 function drawTabs() {
   $('#tabs').replaceChildren(...TABS.map(([id, label]) => h('button', { class: tab === id ? 'on' : '', onclick: () => { tab = id; draw(); } }, label)));
 }
@@ -359,6 +412,7 @@ function drawView() {
   const v = $('#view');
   if (tab === 'dashboard') { v.replaceChildren(renderDashboard()); const l = $('#log'); if (l) l.scrollTop = l.scrollHeight; }
   else if (tab === 'connect') v.replaceChildren(renderConnect());
+  else if (tab === 'cards') { v.replaceChildren(renderCards()); loadCards(); }
   else if (!cfg) v.replaceChildren(h('p', { class: 'empty' }, 'Loading settings…'));
   else v.replaceChildren(tab === 'bid' ? renderRules('bid') : tab === 'recycle' ? renderRules('recycle') : tab === 'sell' ? renderRules('sell') : renderSettings());
 }
@@ -372,6 +426,7 @@ async function poll() {
     m.textContent = state.paused ? 'PAUSED' : state.mode === 'live' ? 'LIVE' : 'DRY-RUN';
     m.className = 'badge ' + (state.paused ? 'paused' : state.mode === 'live' ? 'live' : 'dry');
     $('#pause').textContent = state.paused ? 'Resume' : 'Pause';
+    if (tab === 'cards' && !window.__cardsBusy) loadCards();
     if (tab === 'dashboard') { const l = $('#log'); const stick = !l || l.scrollTop + l.clientHeight >= l.scrollHeight - 30; drawView(); if (stick) { const n = $('#log'); if (n) n.scrollTop = n.scrollHeight; } }
   } else { $('#mode').textContent = 'offline'; $('#mode').className = 'badge paused'; }
 }

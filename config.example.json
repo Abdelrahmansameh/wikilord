@@ -6,11 +6,13 @@
     "extraBidLatencyMs": 150,
     "jitterMs": 60,
     "preCheckLeadMs": 5000,
-    "pollSeconds": 45,
+    "pollSeconds": 90,
     "horizonMinutes": 90,
-    "maxPages": 6,
+    "maxPages": 3,
     "recalibrateMinutes": 30,
-    "counterRemainingMs": 3500
+    "counterRemainingMs": 3500,
+    "searchBudgetSeconds": 8,
+    "scanBudgetSeconds": 10
   },
   "global": {
     "skipOwned": true,

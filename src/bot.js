@@ -1,9 +1,10 @@
 import fs from 'node:fs';
 import { Session } from './http.js';
 import { calibrate } from './clock.js';
-import { decide, describe, plain } from './rules.js';
+import { bidRuleMatch, decide, describe, plain } from './rules.js';
 import { startPacks } from './packs.js';
 import { startSelling } from './sell.js';
+import { cardEvent, wonCardIds } from './history.js';
 import { loadConfig, watchConfig } from './config.js';
 import { startUI } from './ui.js';
 
@@ -37,6 +38,47 @@ const log = (...a) => {
 };
 const control = { paused: false };
 
+/**
+ * Be gentle with the site: track how long list requests take. When they get slow (over ~2.5 s on average) the
+ * bot stops scanning for two minutes, so its own requests never make a struggling site slower.
+ */
+let listLatency = 300;
+let coolUntil = 0;
+let lastCoolLog = 0;
+function noteLatency(ms) {
+  listLatency = 0.7 * listLatency + 0.3 * ms;
+  if (listLatency > 2500) coolUntil = Date.now() + 120_000;
+}
+const siteBusy = () => Date.now() < coolUntil;
+
+/** Recent bid round-trip times: when the site is slow to process bids we must send earlier. */
+const recentBidRtts = [];
+function bidLatencyMs() {
+  const cutoff = Date.now() - 30 * 60_000;
+  const rtts = recentBidRtts.filter((s) => s.at > cutoff).map((s) => s.rtt).sort((p, q) => p - q);
+  if (rtts.length < 2) return 0;
+  return 0.8 * rtts[Math.min(rtts.length - 1, Math.floor(0.75 * rtts.length))]; // ~80% of the 75th percentile
+}
+
+/** Cards the bot won by bidding (remembered across restarts), plus why a card must never be sold or recycled. */
+const wonIds = wonCardIds();
+const protectedBy = (facts) => {
+  if (wonIds.has(facts.cardId)) return 'bought by a bid rule';
+  const rule = bidRuleMatch(cfg, facts, wishlist);
+  return rule ? `matches bid rule "${rule}"` : null;
+};
+
+/** True in the seconds around a snipe (one about to fire) and while we are following an auction we bid on. */
+const sniping = () => {
+  const now = Date.now();
+  for (const p of plans.values()) if (p.fireAt - now < 25_000 && p.fireAt - now > -6_000) return true;
+  return watching.size > 0;
+};
+/** Background chores (scans, packs, recycling, selling) await this before each request. */
+control.quiet = async () => {
+  for (let i = 0; i < 400 && sniping(); i++) await sleep(250);
+};
+
 /** Newest-first records from bids.jsonl (bids and auction end-time events share the file). */
 function recentRecords() {
   try {
@@ -58,7 +100,9 @@ const serverNow = () => Date.now() + clock.offsetMs;
 const jitter = () => (Math.random() * 2 - 1) * T.jitterMs;
 
 async function fetchPage(page) {
+  await control.quiet();
   const r = await session.request('GET', `/api/marketplace?page=${page}&limit=50&sort=ending_soon`);
+  noteLatency(r.t1 - r.t0);
   if (r.status === 401 || r.status === 403 || (r.status >= 300 && r.status < 400)) {
     sessionProblem = 'The site rejected your login. Paste a fresh cookie on the Connect tab.';
     throw new Error(`Session rejected (HTTP ${r.status}${r.location ? ' -> ' + r.location : ''}). Paste a fresh cookie on the dashboard Connect tab.`);
@@ -71,10 +115,12 @@ async function fetchPage(page) {
 async function listAuctions(maxPages = T.maxPages) {
   const out = [];
   const horizon = Date.now() + clock.offsetMs + T.horizonMinutes * 60_000;
+  const started = Date.now();
   for (let p = 1; p <= maxPages; p++) {
     const j = await fetchPage(p);
     out.push(...j.auctions);
     if (!j.hasMore || !j.auctions.length || Date.parse(j.auctions.at(-1).end_at) > horizon) break;
+    if (Date.now() - started > (T.scanBudgetSeconds ?? 20) * 1000 || siteBusy()) break; // site is slow: soonest auctions first is enough
   }
   return out;
 }
@@ -95,8 +141,15 @@ async function refreshWishlist() {
 }
 
 /** The marketplace is huge, so find wishlist auctions by title search and match on card id. */
+const searchResults = new Map(); // auction id -> { a, at }, kept between scans
+let searchCursor = 0;
+
+/**
+ * Find auctions for wishlist cards and keyword rules by title search. Each title is a heavy request, so the
+ * titles are worked through in slices with a time budget per scan (searchBudgetSeconds); when the site is slow
+ * we get through fewer titles per scan instead of piling requests on top of each other.
+ */
 async function wishlistAuctions() {
-  const out = new Map();
   // The site's search does not match the "(qualifier)" part of a title, so search on the text before it.
   // query text -> which results to keep. Wishlist titles keep wishlist cards; a rule's "titleContains" keeps titles containing it.
   const searches = new Map();
@@ -105,16 +158,27 @@ async function wishlistAuctions() {
     const kw = rule.enabled !== false && rule.when?.titleContains;
     if (kw && !searches.has(kw)) searches.set(kw, (a) => plain(a.card?.wikipedia_title).includes(plain(kw)));
   }
-  for (const [q, keep] of searches) {
+  const queries = [...searches.keys()];
+  const budgetMs = (T.searchBudgetSeconds ?? 20) * 1000;
+  const started = Date.now();
+  for (let done = 0; done < queries.length && Date.now() - started < budgetMs && !siteBusy(); done++) {
+    const q = queries[searchCursor++ % queries.length];
+    const keep = searches.get(q);
     const maxPages = q.length < 4 ? 20 : 8; // very short queries match a lot of auctions
-    for (let p = 1; p <= maxPages; p++) {
+    for (let p = 1; p <= maxPages && Date.now() - started < budgetMs * 2; p++) {
+      await control.quiet();
       const r = await session.request('GET', `/api/marketplace?page=${p}&limit=50&sort=ending_soon&q=${encodeURIComponent(q)}`);
+      noteLatency(r.t1 - r.t0);
       if (r.status !== 200 || !r.json?.auctions) break;
-      for (const a of r.json.auctions) if (keep(a)) out.set(a.id, a);
+      for (const a of r.json.auctions) if (keep(a)) searchResults.set(a.id, { a, at: Date.now() });
+      if (siteBusy()) break;
       if (!r.json.hasMore) break;
     }
   }
-  return [...out.values()];
+  // forget auctions that have ended or were last seen a long time ago
+  const now = serverNow();
+  for (const [id, v] of searchResults) if (Date.parse(v.a.end_at) < now || Date.now() - v.at > 50 * 60_000) searchResults.delete(id);
+  return [...searchResults.values()].map((v) => v.a);
 }
 
 async function refreshBalance() {
@@ -157,7 +221,7 @@ function budgetOk(amount, { skipGap = false, auctionId } = {}) {
 
 function schedule(a, decision) {
   const endMs = Date.parse(a.end_at);
-  const oneWay = clock.rttMs / 2 + T.extraBidLatencyMs;
+  const oneWay = Math.max(clock.rttMs / 2 + T.extraBidLatencyMs, bidLatencyMs());
   // Local time at which to send so the server receives the bid ~targetRemainingMs before end.
   const fireAt = endMs - T.targetRemainingMs - oneWay - clock.offsetMs + jitter();
   const prev = plans.get(a.id);
@@ -191,7 +255,7 @@ async function preCheck(id) {
 
 async function fireWhenReady(a, decision) {
   const endMs = Date.parse(a.end_at);
-  const oneWay = clock.rttMs / 2 + T.extraBidLatencyMs;
+  const oneWay = Math.max(clock.rttMs / 2 + T.extraBidLatencyMs, bidLatencyMs());
   const fireAt = endMs - T.targetRemainingMs - oneWay - clock.offsetMs + jitter();
   let wait = fireAt - Date.now();
   if (wait < -500) return void (plans.delete(a.id), log(`missed window by ${(-wait / 1000).toFixed(1)}s: ${describe(a)}`));
@@ -239,6 +303,8 @@ async function watchAuction(a, amount, ruleName) {
           stats.wonSpent += cur.final_price ?? amount;
           committedToday(); // rolls the day over if needed
           spentToday.won += cur.final_price ?? amount;
+          wonIds.add(a.card_id);
+          cardEvent('won', { cardId: a.card_id, title, rarity: a.snapshot_rarity, price: cur.final_price ?? amount, rule: ruleName });
           log(`WON ${title} for ${cur.final_price ?? amount}`);
         } else {
           stats.lost++;
@@ -271,7 +337,7 @@ async function watchAuction(a, amount, ruleName) {
 
 /** Schedule a new snipe after being outbid: normal lead time if it is still reachable, else a shorter one. */
 function queueCounter(cur, decision) {
-  const oneWay = clock.rttMs / 2 + T.extraBidLatencyMs;
+  const oneWay = Math.max(clock.rttMs / 2 + T.extraBidLatencyMs, bidLatencyMs());
   const msLeft = Date.parse(cur.end_at) - serverNow();
   let lead = T.targetRemainingMs;
   let wait = msLeft - lead - oneWay;
@@ -330,6 +396,7 @@ async function placeBid(a, decision, fireAt, { counter = false } = {}) {
     balance = r.json.bidder_balance ?? balance;
   }
   ok ? stats.bidsOk++ : stats.bidsFailed++;
+  if (ok) recentBidRtts.push({ at: Date.now(), rtt: r.t1 - r.t0 });
   if (ok) {
     pendingBids.set(a.id, { title: a.card?.wikipedia_title, amount: decision.amount });
     watchAuction(a, decision.amount, decision.rule).catch(() => pendingBids.delete(a.id));
@@ -350,7 +417,26 @@ async function placeBid(a, decision, fireAt, { counter = false } = {}) {
   record({ counter, id: a.id, title: a.card?.wikipedia_title, rarity: a.snapshot_rarity, amount: decision.amount, status: r.status, body: r.json ?? r.text.slice(0, 300), predictedRemainingMs, rttMs: r.t1 - r.t0, extendedMs: extended, sentLocal, serverDate: r.date });
 }
 
+let polling = false;
+
 async function poll(withWishlist = true) {
+  if (polling) return; // a scan is still running: do not start another on top of it
+  polling = true;
+  try {
+    await pollOnce(withWishlist);
+  } finally {
+    polling = false;
+  }
+}
+
+async function pollOnce(withWishlist) {
+  if (siteBusy()) {
+    if (Date.now() - lastCoolLog > 110_000) {
+      lastCoolLog = Date.now();
+      log(`site is slow (list requests average ${(listLatency / 1000).toFixed(1)}s): pausing scans for ~2 min to ease its load. Planned bids still fire.`);
+    }
+    return;
+  }
   const near = await listAuctions();
   const wl = withWishlist ? await wishlistAuctions() : [];
   const wlIds = new Set(wl.map((a) => a.id));
@@ -433,12 +519,21 @@ async function main() {
   clock = await calibrate(session);
   log(`clock: offset ${clock.offsetMs.toFixed(0)}ms (±${clock.uncertaintyMs.toFixed(0)}), rtt ${clock.rttMs}ms, ${clock.samples} samples`);
   await refreshBalance().catch((e) => log('balance:', e.message));
-  await refreshWishlist();
-  await poll();
+  for (;;) {
+    // the site can be slow or answer 5xx: keep trying instead of exiting
+    try {
+      await refreshWishlist();
+      break;
+    } catch (e) {
+      log(`${e.message}; retrying in 15s`);
+      await sleep(15_000);
+    }
+  }
+  await poll().catch((e) => log('first scan failed:', e.message));
   if (ONCE) return process.exit(0);
   watchConfig(cfg, log);
   startPacks({
-    session, cfg, log, dry: DRY, getWishlist: () => wishlist, control, stats,
+    session, cfg, log, dry: DRY, getWishlist: () => wishlist, control, stats, isProtected: protectedBy,
     onBalance: (nb) => {
       const gained = nb - (balance ?? nb);
       balance = nb;
@@ -446,11 +541,15 @@ async function main() {
       return gained;
     },
   });
-  startSelling({ session, cfg, log, dry: DRY, getWishlist: () => wishlist, control, stats, info: sellInfo });
+  startSelling({ session, cfg, log, dry: DRY, getWishlist: () => wishlist, control, stats, info: sellInfo, isProtected: protectedBy });
   setInterval(() => refreshBalance().catch(() => {}), 5 * 60_000);
-  setInterval(() => refreshWishlist().catch((e) => log(e.message)), 15_000);
+  setInterval(() => (siteBusy() ? null : refreshWishlist().catch((e) => log(e.message))), 30_000);
   setInterval(() => poll().catch((e) => { log('poll error:', e.message); if (/token refresh failed/.test(e.message)) sessionProblem = e.message; }), T.pollSeconds * 1000);
   setInterval(async () => (clock = await calibrate(session, { durationMs: 8000 }), log(`recalibrated: offset ${clock.offsetMs.toFixed(0)}ms rtt ${clock.rttMs}ms`)), T.recalibrateMinutes * 60_000);
 }
+
+// A stray failed request must never take the bot down: log it and carry on.
+process.on('unhandledRejection', (e) => log('unhandled error:', e?.message ?? e));
+process.on('uncaughtException', (e) => log('uncaught error:', e?.message ?? e));
 
 main().catch((e) => (console.error(e.message), process.exit(1)));

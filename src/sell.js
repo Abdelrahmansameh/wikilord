@@ -1,4 +1,5 @@
 import { decideSell, ownedFacts } from './rules.js';
+import { cardEvent } from './history.js';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const rnd = ([a, b]) => a + Math.random() * (b - a);
@@ -30,7 +31,7 @@ export async function fetchCollection(session) {
  * (default 75%) of the average sale price the site shows, up to the site's listing limit.
  * Anything that changes the account only runs when `dry` is false.
  */
-export function startSelling({ session, cfg, log, dry, getWishlist, control = { paused: false }, stats = {}, info = {} }) {
+export function startSelling({ session, cfg, log, dry, getWishlist, control = { paused: false }, stats = {}, info = {}, isProtected = () => null }) {
   const S = cfg.sell;
   const cache = new Map(); // card id -> { at, summary }
   const counted = new Set(); // sold auctions already added to the revenue total
@@ -42,6 +43,7 @@ export function startSelling({ session, cfg, log, dry, getWishlist, control = { 
     let hit = cache.get(cardId);
     let fetched = false;
     if (!hit || Date.now() - hit.at > 30 * 60_000) {
+      await control.quiet?.();
       const r = await session.request('GET', `/api/marketplace/cards/${cardId}/sales?scope=summary`);
       if (r.status !== 200 || !r.json?.summary) return { error: `HTTP ${r.status}`, fetched: true };
       hit = { at: Date.now(), summary: r.json.summary };
@@ -58,6 +60,7 @@ export function startSelling({ session, cfg, log, dry, getWishlist, control = { 
       counted.add(a.id);
       stats.soldCount = (stats.soldCount ?? 0) + 1;
       stats.soldRevenue = (stats.soldRevenue ?? 0) + (a.final_price ?? 0);
+      cardEvent('sold', { cardId: a.card_id, title: a.card?.wikipedia_title, rarity: a.snapshot_rarity, price: a.final_price });
       log(`SOLD ${a.card?.wikipedia_title} [${a.snapshot_rarity}] for ${a.final_price}`);
     }
   }
@@ -85,6 +88,7 @@ export function startSelling({ session, cfg, log, dry, getWishlist, control = { 
       for (const e of cards) {
         if (pendingTrade.has(e.id) || pendingTrade.has(e.card_id) || listed.has(e.card_id) || seenCards.has(e.card_id)) continue;
         const facts = ownedFacts({ card: e.card, cardId: e.card_id, shiny: e.is_shiny, starred: e.starred, tagged: (e.tags ?? []).length > 0 });
+        if (isProtected(facts)) continue; // bought by a bid rule, or matches one: never sold
         const d = decideSell(S, facts, wishlist);
         if (d.action !== 'sell') continue;
         seenCards.add(e.card_id);
@@ -128,11 +132,13 @@ export function startSelling({ session, cfg, log, dry, getWishlist, control = { 
       let slots = free;
       for (const p of chosen) {
         await sleep(rnd(S.gapMs));
+        await control.quiet?.();
         const minutes = p.rule.durationMinutes ?? S.durationMinutes;
         const r = await session.request('POST', '/api/marketplace', { json: { card_id: p.e.id, base_amount: p.price, duration_minutes: minutes } });
         if (r.status === 201 && r.json?.auction_id) {
           slots--;
           stats.listed = (stats.listed ?? 0) + 1;
+          cardEvent('listed', { cardId: p.e.card_id, title: p.e.card.wikipedia_title, rarity: p.rarity, price: p.price, average: p.avg, minutes });
           log(`LISTED ${p.e.card.wikipedia_title} [${p.rarity}] for ${p.price} (${p.avg != null ? `avg ${p.avg} x ${p.factor}` : 'no sales history'}, ${minutes} min, rule ${p.ruleName}, ${slots} slot(s) left)`);
         } else {
           log(`sell FAILED for ${p.e.card.wikipedia_title}: HTTP ${r.status} ${r.text.slice(0, 160)}`);

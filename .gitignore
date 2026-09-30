@@ -6,6 +6,7 @@
 *.har
 *.log
 bids.jsonl
+cards.jsonl
 
 # personal or scratch config
 config.json

@@ -1,5 +1,6 @@
 import { decideRecycle, ownedFacts } from './rules.js';
 import { fetchMyListings } from './sell.js';
+import { cardEvent } from './history.js';
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const rnd = ([a, b]) => a + Math.random() * (b - a);
@@ -8,20 +9,29 @@ const rnd = ([a, b]) => a + Math.random() * (b - a);
  * Opens packs whenever they are available and recycles unwanted cards.
  * Everything that changes the account only runs when `dry` is false.
  */
-export function startPacks({ session, cfg, log, dry, getWishlist, control = { paused: false }, stats = {}, onBalance }) {
+export function startPacks({ session, cfg, log, dry, getWishlist, control = { paused: false }, stats = {}, onBalance, isProtected = () => null }) {
   const P = cfg.packs ?? { enabled: false };
   const R = cfg.recycle ?? { enabled: false };
   let pausedUntil = 0;
   let busy = false;
 
   /** Apply the recycle.rules policy to one owned card. */
-  const shouldRecycle = (facts) => decideRecycle(R, facts, getWishlist()).action === 'recycle';
+  /** { recycle, rule, protectedBy }: cards bought by bid rules, or matching a bid rule, are never recycled. */
+  const recycleDecision = (facts) => {
+    const protectedBy = isProtected(facts);
+    if (protectedBy) return { recycle: false, rule: null, protectedBy };
+    const d = decideRecycle(R, facts, getWishlist());
+    return { recycle: d.action === 'recycle', rule: d.rule, protectedBy: null };
+  };
 
-  async function discard(userCardId, label) {
+  async function discard(it) {
+    const userCardId = it.id;
+    const label = it.label;
     const r = await session.request('POST', `/api/user-cards/${userCardId}/discard`);
     if (r.status === 200 && typeof r.json?.balance === 'number') {
       stats.recycled = (stats.recycled ?? 0) + 1;
-      onBalance?.(r.json.balance);
+      const gained = onBalance?.(r.json.balance);
+      cardEvent('recycled', { cardId: it.cardId, title: it.title, rarity: it.rarity, rule: it.rule, gained, balance: r.json.balance });
       log(`recycled ${label} -> balance ${r.json.balance}`);
       return true;
     }
@@ -39,7 +49,8 @@ export function startPacks({ session, cfg, log, dry, getWishlist, control = { pa
     let done = 0;
     for (const it of todo) {
       await sleep(rnd(R.gapMs));
-      if (!(await discard(it.id, it.label))) break;
+      await control.quiet?.();
+      if (!(await discard(it))) break;
       done++;
     }
     return done;
@@ -52,8 +63,8 @@ export function startPacks({ session, cfg, log, dry, getWishlist, control = { pa
     for (const o of pack.owned_copies ?? []) {
       const c = byId.get(o.card_id);
       if (!c) continue;
-      const ok = shouldRecycle(ownedFacts({ card: c, cardId: o.card_id, shiny: o.is_shiny, starred: o.starred, tagged: (o.user_card_tags ?? []).length > 0 }));
-      if (ok) items.push({ id: o.id, label: `${c.wikipedia_title} [${c.rarity}]` });
+      const d = recycleDecision(ownedFacts({ card: c, cardId: o.card_id, shiny: o.is_shiny, starred: o.starred, tagged: (o.user_card_tags ?? []).length > 0 }));
+      if (d.recycle) items.push({ id: o.id, cardId: o.card_id, title: c.wikipedia_title, rarity: c.rarity, rule: d.rule, label: `${c.wikipedia_title} [${c.rarity}]` });
     }
     return recycleList(items, 'from pack');
   }
@@ -79,8 +90,8 @@ export function startPacks({ session, cfg, log, dry, getWishlist, control = { pa
         seen += r.json.collection.length;
         for (const e of r.json.collection) {
           if (pendingTrade.has(e.id) || pendingTrade.has(e.card_id) || listed.has(e.card_id)) continue;
-          const ok = shouldRecycle(ownedFacts({ card: e.card, cardId: e.card_id, shiny: e.is_shiny, starred: e.starred, tagged: (e.tags ?? []).length > 0 }));
-          if (ok) items.push({ id: e.id, label: `${e.card.wikipedia_title} [${e.card.rarity}]` });
+          const d = recycleDecision(ownedFacts({ card: e.card, cardId: e.card_id, shiny: e.is_shiny, starred: e.starred, tagged: (e.tags ?? []).length > 0 }));
+          if (d.recycle) items.push({ id: e.id, cardId: e.card_id, title: e.card.wikipedia_title, rarity: e.card.rarity, rule: d.rule, label: `${e.card.wikipedia_title} [${e.card.rarity}]` });
         }
         if (r.json.total != null && seen >= r.json.total) break;
       }
@@ -102,6 +113,7 @@ export function startPacks({ session, cfg, log, dry, getWishlist, control = { pa
     let opened = 0;
     while (remaining > 0 && opened < P.maxPerRun) {
       await sleep(rnd(P.gapMs));
+      await control.quiet?.();
       const r = await session.request('POST', '/api/packs/open');
       if (r.status !== 200 || !Array.isArray(r.json?.cards)) {
         const body = r.text.slice(0, 200);
@@ -118,6 +130,7 @@ export function startPacks({ session, cfg, log, dry, getWishlist, control = { pa
       const wl = getWishlist();
       const summary = r.json.cards.map((c) => `${c.wikipedia_title} [${c.rarity}]${wl.has(c.id) ? ' *WISHLIST*' : ''}`);
       log(`PACK opened (${remaining} left): ${summary.join(' | ')}`);
+      for (const c of r.json.cards) cardEvent('pack', { cardId: c.id, title: c.wikipedia_title, rarity: c.rarity, wishlist: wl.has(c.id) });
       if (R.enabled && R.afterPackOpen) await recycleFromPack(r.json);
     }
   }

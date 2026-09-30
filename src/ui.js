@@ -2,6 +2,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import { CONFIG_PATH, loadConfig, validate } from './config.js';
 import { Session, cookieLooksRight, normalizeCookieInput } from './http.js';
+import { readCardEvents } from './history.js';
 
 const PAGE = new URL('./ui.html', import.meta.url);
 
@@ -31,6 +32,10 @@ export function startUI({ port, getState, control, log, session, onConnected }) 
 
       if (req.method === 'GET' && url.pathname === '/') return send(res, 200, fs.readFileSync(PAGE), 'text/html; charset=utf-8');
       if (req.method === 'GET' && url.pathname === '/api/state') return send(res, 200, getState());
+      if (req.method === 'GET' && url.pathname === '/api/cards-history') {
+        const q = url.searchParams;
+        return send(res, 200, readCardEvents({ limit: Math.min(Number(q.get('limit')) || 300, 2000), type: q.get('type') || undefined, q: q.get('q') || undefined }));
+      }
       if (req.method === 'GET' && url.pathname === '/api/config') return send(res, 200, fs.readFileSync(CONFIG_PATH, 'utf8'));
 
       if (req.method === 'PUT' && url.pathname === '/api/config') {
