@@ -7,7 +7,7 @@ const rnd = ([a, b]) => a + Math.random() * (b - a);
  * Opens packs whenever they are available and recycles unwanted cards.
  * Everything that changes the account only runs when `dry` is false.
  */
-export function startPacks({ session, cfg, log, dry, getWishlist, control = { paused: false }, stats = {} }) {
+export function startPacks({ session, cfg, log, dry, getWishlist, control = { paused: false }, stats = {}, onBalance }) {
   const P = cfg.packs ?? { enabled: false };
   const R = cfg.recycle ?? { enabled: false };
   let pausedUntil = 0;
@@ -20,6 +20,7 @@ export function startPacks({ session, cfg, log, dry, getWishlist, control = { pa
     const r = await session.request('POST', `/api/user-cards/${userCardId}/discard`);
     if (r.status === 200 && typeof r.json?.balance === 'number') {
       stats.recycled = (stats.recycled ?? 0) + 1;
+      onBalance?.(r.json.balance);
       log(`recycled ${label} -> balance ${r.json.balance}`);
       return true;
     }

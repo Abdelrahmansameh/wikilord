@@ -142,6 +142,23 @@ const clock = (iso) => new Date(iso).toLocaleTimeString();
 /* ---------- dashboard ---------- */
 function stat(label, value, sub) { return h('div', { class: 'stat' }, h('b', {}, value ?? '–'), h('span', {}, label + (sub ? ` · ${sub}` : ''))); }
 
+/** Money this session: earned from recycling, spent on won cards, and the net balance change. */
+function money(m) {
+  if (!m) return null;
+  const signed = (n) => (n == null ? '–' : (n > 0 ? '+' : n < 0 ? '−' : '') + Math.abs(n));
+  const tile = (label, value, sub, cls) => h('div', { class: 'stat' }, h('b', { class: cls || '' }, value), h('span', {}, label + (sub ? ` · ${sub}` : '')));
+  const netCls = m.net > 0 ? 'good' : m.net < 0 ? 'err' : '';
+  return h('section', {},
+    h('h2', {}, 'Money this session'),
+    h('div', { class: 'grid', style: 'margin-bottom:8px' },
+      tile('Net change', signed(m.net), m.startBalance == null ? '' : `${m.startBalance} → ${m.balance}`, netCls),
+      tile('Earned (recycling)', signed(m.earnedRecycling), `${m.recycledCount} cards`, m.earnedRecycling ? 'good' : ''),
+      tile('Spent (cards won)', m.spentOnWon ? '−' + m.spentOnWon : '0', `${m.won} won`, m.spentOnWon ? 'err' : ''),
+      tile('Held in open bids', m.heldInBids, `${m.pending} waiting`),
+      tile('Bid results', `${m.won} won / ${m.outbid} outbid`)),
+    h('p', { class: 'hint', style: 'margin:0' }, 'Since the bot started. A bid is held until its auction ends; if someone outbids you it is refunded, so only won auctions count as spent. Net change also reflects refunds and anything you do on the site yourself.'));
+}
+
 function renderDashboard() {
   const s = state; if (!s) return h('p', { class: 'empty' }, 'Connecting…');
   const bidRows = s.recentBids.map((b) => h('tr', {},
@@ -160,6 +177,7 @@ function renderDashboard() {
       stat('Packs opened', s.stats.packs), stat('Cards recycled', s.stats.recycled),
       stat('Wishlist cards', s.wishlistSize), stat('Session valid for', `${s.sessionMinLeft} min`),
       stat('Clock / latency', `${s.clock.offsetMs} ms`, `rtt ${s.clock.rttMs} ms`), stat('Uptime', fmtSec(s.uptimeSec))),
+    money(s.money),
     h('section', {}, h('h2', {}, 'Upcoming snipes'),
       s.plans.length ? h('table', {}, h('thead', {}, h('tr', {}, ['Card', 'Rarity', 'Bid', 'Rule', 'Fires in', 'Auction ends'].map((x) => h('th', {}, x)))), h('tbody', {}, planRows)) : h('p', { class: 'empty' }, 'Nothing planned. The bot looks for matching auctions continuously.')),
     h('section', {}, h('h2', {}, 'Recent bids'),

@@ -35,7 +35,9 @@ const log = (...a) => {
   if (logRing.length > 400) logRing.shift();
 };
 const control = { paused: false };
-const stats = { bidsOk: 0, bidsFailed: 0, packs: 0, recycled: 0 };
+const stats = { bidsOk: 0, bidsFailed: 0, packs: 0, recycled: 0, earned: 0, won: 0, lost: 0, wonSpent: 0 };
+const pendingBids = new Map(); // auction id -> { title, amount } for bids whose auction has not finished
+let startBalance = null;
 const startedAt = Date.now();
 const record = (o) => fs.appendFileSync(LOG, JSON.stringify({ at: new Date().toISOString(), ...o }) + '\n');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -106,6 +108,7 @@ async function refreshBalance() {
   const r = await session.request('GET', '/api/wikibidous');
   if (r.status === 200 && typeof r.json?.balance === 'number') {
     balance = r.json.balance;
+    if (startBalance === null) startBalance = balance;
     log(`balance: ${balance}`);
   }
 }
@@ -173,6 +176,37 @@ async function fireWhenReady(a, decision) {
   await placeBid(a, decision, fireAt);
 }
 
+/** After the auction ends, find out whether we won (and at what price) or were outbid (bid refunded). */
+async function trackOutcome(a, amount) {
+  await sleep(Math.max(1000, Date.parse(a.end_at) - serverNow() + 4000));
+  for (let i = 0; i < 8; i++) {
+    try {
+      const cur = await getAuction(a.id);
+      const msLeft = Date.parse(cur.end_at) - serverNow();
+      if (msLeft > 1000) {
+        await sleep(msLeft + 4000); // someone extended it
+        continue;
+      }
+      if (cur.status !== 'active') {
+        pendingBids.delete(a.id);
+        const title = a.card?.wikipedia_title;
+        if (cur.winner_id && cur.winner_id === cfg.myUserId) {
+          stats.won++;
+          stats.wonSpent += cur.final_price ?? amount;
+          log(`WON ${title} for ${cur.final_price ?? amount}`);
+        } else {
+          stats.lost++;
+          log(`OUTBID on ${title} (my bid ${amount} refunded)`);
+        }
+        refreshBalance().catch(() => {});
+        return;
+      }
+    } catch {}
+    await sleep(4000);
+  }
+  pendingBids.delete(a.id);
+}
+
 async function placeBid(a, decision, fireAt) {
   if (control.paused) {
     plans.delete(a.id);
@@ -199,6 +233,10 @@ async function placeBid(a, decision, fireAt) {
     spentToday.amount += decision.amount;
   }
   ok ? stats.bidsOk++ : stats.bidsFailed++;
+  if (ok) {
+    pendingBids.set(a.id, { title: a.card?.wikipedia_title, amount: decision.amount });
+    trackOutcome(a, decision.amount).catch(() => pendingBids.delete(a.id));
+  }
   log(`${ok ? 'BID OK' : 'BID FAILED'} ${decision.amount} on ${describe(a)} http=${r.status} rtt=${r.t1 - r.t0}ms balance=${balance} ${ok ? '' : r.text.slice(0, 200)}`);
   plans.delete(a.id);
 
@@ -258,6 +296,18 @@ async function main() {
         wishlistSize: wishlist.size,
         clock: { offsetMs: Math.round(clock.offsetMs), rttMs: clock.rttMs },
         sessionMinLeft: Math.round(((session.readAuth()?.expires_at ?? 0) - Date.now() / 1000) / 60),
+        money: {
+          startBalance,
+          balance,
+          net: startBalance === null || balance === null ? null : balance - startBalance,
+          earnedRecycling: stats.earned,
+          recycledCount: stats.recycled,
+          spentOnWon: stats.wonSpent,
+          won: stats.won,
+          outbid: stats.lost,
+          pending: pendingBids.size,
+          heldInBids: [...pendingBids.values()].reduce((s, p) => s + p.amount, 0),
+        },
         spentToday: spentToday.amount,
         dailySpendCap: cfg.global.dailySpendCap,
         stats,
@@ -286,7 +336,15 @@ async function main() {
   await poll();
   if (ONCE) return process.exit(0);
   watchConfig(cfg, log);
-  startPacks({ session, cfg, log, dry: DRY, getWishlist: () => wishlist, control, stats });
+  startPacks({
+    session, cfg, log, dry: DRY, getWishlist: () => wishlist, control, stats,
+    onBalance: (nb) => {
+      const gained = nb - (balance ?? nb);
+      balance = nb;
+      if (gained > 0) stats.earned += gained;
+      return gained;
+    },
+  });
   setInterval(() => refreshBalance().catch(() => {}), 5 * 60_000);
   setInterval(() => refreshWishlist().catch((e) => log(e.message)), 15_000);
   setInterval(() => poll().catch((e) => { log('poll error:', e.message); if (/token refresh failed/.test(e.message)) sessionProblem = e.message; }), T.pollSeconds * 1000);
