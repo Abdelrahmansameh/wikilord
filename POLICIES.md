@@ -41,6 +41,8 @@ Add `"enabled": false` to switch a rule off without deleting it.
 - `"skip": true`: never bid on matches.
 - Cards you own, your own listings, and auctions you already lead are always skipped (`global.skipOwned`).
 
+**Outbid = new snipe.** After our snipe the bot follows that auction. If someone bids after us and the rules still allow the new price, it queues another snipe: at the normal 11 s before the new end if that moment is still ahead, otherwise `timing.counterRemainingMs` (default 3.5 s) before the end, which extends the auction again. `global.counters` (default 2) caps how many times per auction; a rule can override it with `bid.counters` (0 = never). Counters obey the price max, the daily cap, the hourly limit and the balance reserve. The log shows `someone bid ... after us`, `COUNTER queued`, and every time an outbid moved the end time (`end time moved +Ns`), so you can see how the site's extension works.
+
 Safety limits (`global`): `dailySpendCap`, `maxSnipesPerHour`, `reserveBalance` (balance to always keep), `minGapBetweenBidsMs`.
 
 Timing (`timing`): `targetRemainingMs` is when the bid should land before the end (11000 = 11 s, must stay > 10000 or the auction extends). `extraBidLatencyMs` shifts the bid earlier if it lands too late (the log says so when an auction gets extended).

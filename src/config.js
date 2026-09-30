@@ -41,11 +41,14 @@ export function validate(cfg) {
   const t = cfg.timing ?? {};
   for (const k of ['targetRemainingMs', 'extraBidLatencyMs', 'jitterMs', 'preCheckLeadMs', 'pollSeconds', 'horizonMinutes', 'maxPages', 'recalibrateMinutes'])
     if (typeof t[k] !== 'number') e.push(`timing.${k} must be a number`);
+  for (const kk of ['counterRemainingMs']) if (t[kk] !== undefined && typeof t[kk] !== 'number') e.push(`timing.${kk} must be a number`);
   if (typeof t.targetRemainingMs === 'number' && t.targetRemainingMs <= 10000) e.push('timing.targetRemainingMs must be > 10000, otherwise the bid triggers the 10 s extension');
 
   const g = cfg.global ?? {};
   if (typeof g.skipOwned !== 'boolean') e.push('global.skipOwned must be true or false');
   for (const k of ['reserveBalance', 'dailySpendCap', 'maxSnipesPerHour', 'minGapBetweenBidsMs']) if (typeof g[k] !== 'number') e.push(`global.${k} must be a number`);
+
+  if (g.counters !== undefined && typeof g.counters !== 'number') e.push('global.counters must be a number');
 
   if (!Array.isArray(cfg.rules)) e.push('rules must be a list');
   else
@@ -56,6 +59,7 @@ export function validate(cfg) {
       if (!r?.skip) {
         if (typeof r?.bid?.max !== 'number') e.push(`${w}: needs bid.max (a number) or "skip": true`);
         if (r?.bid?.increment !== undefined && typeof r.bid.increment !== 'number') e.push(`${w}: bid.increment must be a number`);
+        if (r?.bid?.counters !== undefined && typeof r.bid.counters !== 'number') e.push(`${w}: bid.counters must be a number`);
       }
     });
 

@@ -176,38 +176,100 @@ async function fireWhenReady(a, decision) {
   await placeBid(a, decision, fireAt);
 }
 
-/** After the auction ends, find out whether we won (and at what price) or were outbid (bid refunded). */
-async function trackOutcome(a, amount) {
-  await sleep(Math.max(1000, Date.parse(a.end_at) - serverNow() + 4000));
-  for (let i = 0; i < 8; i++) {
-    try {
-      const cur = await getAuction(a.id);
-      const msLeft = Date.parse(cur.end_at) - serverNow();
-      if (msLeft > 1000) {
-        await sleep(msLeft + 4000); // someone extended it
+const watching = new Set(); // auctions we have bid on and are still following
+
+/** Counter-bids allowed on an auction we already bid on: rule setting, else the global default. */
+const countersFor = (ruleName) => cfg.rules.find((r) => r.name === ruleName)?.bid?.counters ?? cfg.global.counters ?? 2;
+
+/**
+ * Follow an auction after our bid. If someone outbids us, queue a new snipe (as long as the rules still
+ * allow the new price); when the auction has ended, record whether we won or were outbid.
+ */
+async function watchAuction(a, amount, ruleName) {
+  if (watching.has(a.id)) return;
+  watching.add(a.id);
+  const title = a.card?.wikipedia_title;
+  let counters = 0;
+  let lastEnd = a.end_at;
+  let lastRival = null;
+  const started = Date.now();
+  try {
+    while (Date.now() - started < 3 * 3600_000) {
+      await sleep(800 + Math.random() * 500); // only watches for the ~15-30 s around the end
+      let cur;
+      try {
+        cur = await getAuction(a.id);
+      } catch {
         continue;
+      }
+      if (cur.end_at !== lastEnd) {
+        const by = Date.parse(cur.end_at) - Date.parse(lastEnd);
+        log(`end time moved +${by / 1000}s on ${title}`);
+        record({ event: 'extended', id: a.id, title, movedMs: by, msLeftWhenSeen: Date.parse(lastEnd) - serverNow() });
+        lastEnd = cur.end_at;
       }
       if (cur.status !== 'active') {
         pendingBids.delete(a.id);
-        const title = a.card?.wikipedia_title;
         if (cur.winner_id && cur.winner_id === cfg.myUserId) {
           stats.won++;
           stats.wonSpent += cur.final_price ?? amount;
           log(`WON ${title} for ${cur.final_price ?? amount}`);
         } else {
           stats.lost++;
-          log(`OUTBID on ${title} (my bid ${amount} refunded)`);
+          log(`OUTBID on ${title}: lost at ${cur.final_price ?? cur.current_bid} (my bid refunded)`);
         }
         refreshBalance().catch(() => {});
         return;
       }
-    } catch {}
-    await sleep(4000);
+      if (cur.current_bidder_id && cur.current_bidder_id !== cfg.myUserId && cur.current_bid !== lastRival) {
+        lastRival = cur.current_bid;
+        log(`someone bid ${cur.current_bid} on ${title} after us`);
+        if (counters >= countersFor(ruleName)) {
+          log(`no more counters for ${title} (limit ${countersFor(ruleName)})`);
+          continue;
+        }
+        const d = decide(cfg, cur, cfg.myUserId, wishlist);
+        if (d.action !== 'bid') {
+          log(`not countering ${title}: ${d.reason}`);
+          continue;
+        }
+        counters++;
+        queueCounter(cur, d);
+      }
+    }
+  } finally {
+    watching.delete(a.id);
+    pendingBids.delete(a.id);
   }
-  pendingBids.delete(a.id);
 }
 
-async function placeBid(a, decision, fireAt) {
+/** Schedule a new snipe after being outbid: normal lead time if it is still reachable, else a shorter one. */
+function queueCounter(cur, decision) {
+  const oneWay = clock.rttMs / 2 + T.extraBidLatencyMs;
+  const msLeft = Date.parse(cur.end_at) - serverNow();
+  let lead = T.targetRemainingMs;
+  let wait = msLeft - lead - oneWay;
+  if (wait < 300) {
+    lead = T.counterRemainingMs ?? 3500; // the normal window has passed; this bid will extend the auction again
+    wait = msLeft - lead - oneWay;
+  }
+  if (msLeft < 1500) return void log(`too late to counter on ${cur.card?.wikipedia_title} (${msLeft}ms left)`);
+  wait = Math.max(0, wait) + jitter();
+  log(`COUNTER queued: ${describe(cur)} bid=${decision.amount} in ${(Math.max(0, wait) / 1000).toFixed(1)}s (${(lead / 1000).toFixed(1)}s before the end)`);
+  setTimeout(async () => {
+    try {
+      const fresh = await getAuction(cur.id);
+      if (fresh.status !== 'active' || fresh.current_bidder_id === cfg.myUserId) return; // ended, or already ours
+      const d = decide(cfg, fresh, cfg.myUserId, wishlist);
+      if (d.action !== 'bid') return void log(`counter dropped for ${fresh.card?.wikipedia_title}: ${d.reason}`);
+      await placeBid(fresh, d, Date.now(), { counter: true });
+    } catch (e) {
+      log('counter error:', e.message);
+    }
+  }, wait);
+}
+
+async function placeBid(a, decision, fireAt, { counter = false } = {}) {
   if (control.paused) {
     plans.delete(a.id);
     return void log(`PAUSED: skipped bid ${decision.amount} on ${describe(a)}`);
@@ -235,7 +297,7 @@ async function placeBid(a, decision, fireAt) {
   ok ? stats.bidsOk++ : stats.bidsFailed++;
   if (ok) {
     pendingBids.set(a.id, { title: a.card?.wikipedia_title, amount: decision.amount });
-    trackOutcome(a, decision.amount).catch(() => pendingBids.delete(a.id));
+    watchAuction(a, decision.amount, decision.rule).catch(() => pendingBids.delete(a.id));
   }
   log(`${ok ? 'BID OK' : 'BID FAILED'} ${decision.amount} on ${describe(a)} http=${r.status} rtt=${r.t1 - r.t0}ms balance=${balance} ${ok ? '' : r.text.slice(0, 200)}`);
   plans.delete(a.id);
@@ -247,9 +309,10 @@ async function placeBid(a, decision, fireAt) {
     const after = await getAuction(a.id);
     extended = after ? Date.parse(after.end_at) - Date.parse(a.end_at) : null;
   } catch {}
-  if (extended > 0) log(`!! auction was EXTENDED by ${extended / 1000}s -> we landed too late. Increase timing.extraBidLatencyMs (try +${Math.min(1500, Math.round((r.t1 - r.t0) / 2))}).`);
+  if (extended > 0 && counter) log(`counter-bid extended the auction by ${extended / 1000}s (expected for a counter)`);
+  else if (extended > 0) log(`!! auction was EXTENDED by ${extended / 1000}s -> we landed too late. Increase timing.extraBidLatencyMs (try +${Math.min(1500, Math.round((r.t1 - r.t0) / 2))}).`);
   else if (ok) log('auction end unchanged -> bid landed before the extension window.');
-  record({ id: a.id, title: a.card?.wikipedia_title, rarity: a.snapshot_rarity, amount: decision.amount, status: r.status, body: r.json ?? r.text.slice(0, 300), predictedRemainingMs, rttMs: r.t1 - r.t0, extendedMs: extended, sentLocal, serverDate: r.date });
+  record({ counter, id: a.id, title: a.card?.wikipedia_title, rarity: a.snapshot_rarity, amount: decision.amount, status: r.status, body: r.json ?? r.text.slice(0, 300), predictedRemainingMs, rttMs: r.t1 - r.t0, extendedMs: extended, sentLocal, serverDate: r.date });
 }
 
 async function poll(withWishlist = true) {
@@ -266,12 +329,13 @@ async function poll(withWishlist = true) {
     if ((endMs > horizon && !wlIds.has(a.id)) || endMs < serverNow()) continue;
     const d = decide(cfg, a, cfg.myUserId, wishlist);
     if (d.action !== 'bid') continue;
+    if (watching.has(a.id)) continue;
     const prev = plans.get(a.id);
     if (prev && prev.endAt === a.end_at) continue;
     schedule(a, d);
     planned++;
   }
-  log(`poll: ${list.length} auctions (${wl.length} wishlist), ${planned} newly planned, ${plans.size} active plans`);
+  log(`poll: ${list.length} auctions (${wl.length} from searches), ${planned} newly planned, ${plans.size} active plans`);
 }
 
 async function main() {

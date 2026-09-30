@@ -9,14 +9,16 @@
     "pollSeconds": 45,
     "horizonMinutes": 90,
     "maxPages": 6,
-    "recalibrateMinutes": 30
+    "recalibrateMinutes": 30,
+    "counterRemainingMs": 3500
   },
   "global": {
     "skipOwned": true,
     "reserveBalance": 0,
     "dailySpendCap": 9,
     "maxSnipesPerHour": 12,
-    "minGapBetweenBidsMs": 1500
+    "minGapBetweenBidsMs": 1500,
+    "counters": 2
   },
   "rules": [
     {
