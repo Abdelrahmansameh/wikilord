@@ -59,6 +59,12 @@
   textarea { width: 100%; font: 12px/1.4 ui-monospace, Consolas, monospace; padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--text); }
   ol.steps { padding-left: 20px; margin: 0 0 14px; } ol.steps li { margin-bottom: 8px; }
   code.cmd { background: var(--chip); padding: 2px 8px; border-radius: 6px; font-family: ui-monospace, Consolas, monospace; }
+  td.actions { white-space: nowrap; }
+  td.actions > * { margin-right: 6px; }
+  td.actions button { padding: 4px 10px; }
+  #valuebox td { white-space: nowrap; vertical-align: middle; height: 38px; }
+  #valuebox td:first-child { max-width: 300px; overflow: hidden; text-overflow: ellipsis; }
+  #valuebox td.why { max-width: 190px; overflow: hidden; text-overflow: ellipsis; }
   @media (max-width: 640px) { .row { grid-template-columns: 1fr; } }
 </style>
 </head>
@@ -379,20 +385,19 @@ function refreshButton(c) {
     b.textContent = '…';
     const r = await api('/api/values/refresh-one', { method: 'POST', body: JSON.stringify({ cardId: c.cardId }) });
     b.disabled = false;
-    b.textContent = r.ok ? '↻ ' + (r.data.average ?? 'no sales') : '↻ failed';
+    b.textContent = r.ok ? '↻ ' + (r.data.average ?? '–') : '⚠';
     setTimeout(loadValues, 1500);
-  } }, '↻ Refresh');
+  } }, '↻');
 }
 
 /**
  * Button that needs several clicks: one to arm, one more to confirm, and one extra step for protected cards
  * (bought by the bot, or matching a bid rule). Protected buttons carry a 🔒.
  */
-function stagedButton({ label, steps, run, danger }) {
-  const msg = h('div', { class: 'hint' });
+function stagedButton({ label, steps, run, danger, tip }) {
   let step = 0;
   let timer;
-  const btn = h('button', { class: danger ? 'danger' : '', onclick: async () => {
+  const btn = h('button', { class: danger ? 'danger' : '', title: tip ?? '', onclick: async () => {
     clearTimeout(timer);
     if (step < steps.length) {
       btn.textContent = steps[step++];
@@ -402,10 +407,16 @@ function stagedButton({ label, steps, run, danger }) {
     btn.disabled = true;
     btn.textContent = '…';
     const r = await run();
-    if (r.ok) btn.replaceWith(h('span', { class: 'good' }, r.done));
-    else { btn.disabled = false; step = 0; btn.textContent = label; msg.className = 'err'; msg.textContent = r.error; }
+    if (r.ok) btn.replaceWith(h('span', { class: 'good', title: r.done }, r.done));
+    else {
+      btn.disabled = false;
+      step = 0;
+      btn.textContent = '⚠ failed';
+      btn.title = r.error;
+      timer = setTimeout(() => { if (btn.isConnected) { btn.textContent = label; btn.title = tip ?? ''; } }, 4000);
+    }
   } }, label);
-  return h('div', {}, btn, msg);
+  return btn;
 }
 
 /** Recycle: unprotected cards need one confirm click, protected cards one more. */
@@ -413,11 +424,11 @@ function recycleButton(c) {
   if (c.listed) return '';
   const lock = c.protectedBy ? '🔒 ' : '';
   const steps = [];
-  if (c.protectedBy) steps.push('🔒 Protected (' + c.protectedBy + ') – click to continue');
-  steps.push(c.average != null && c.average >= 20 ? lock + 'Worth ~' + c.average + '! Click again to recycle' : lock + 'Click again to recycle (+1)');
-  return stagedButton({ label: lock + 'Recycle', steps, danger: true, run: async () => {
+  if (c.protectedBy) steps.push('🔒 Protected – click again');
+  steps.push(c.average != null && c.average >= 20 ? lock + 'Worth ~' + c.average + '! Confirm' : lock + 'Confirm (+1)');
+  return stagedButton({ label: lock + 'Recycle', steps, danger: true, tip: c.protectedBy ? 'Protected: ' + c.protectedBy : 'Recycle for about +1', run: async () => {
     const r = await api('/api/recycle', { method: 'POST', body: JSON.stringify({ cardId: c.cardId, force: Boolean(c.protectedBy) }) });
-    return r.ok ? { ok: true, done: 'Recycled · balance ' + r.data.balance } : { ok: false, error: r.data.error };
+    return r.ok ? { ok: true, done: 'Recycled · ' + r.data.balance } : { ok: false, error: r.data.error };
   } });
 }
 
@@ -427,13 +438,13 @@ function sellButton(c) {
   if (c.price == null) return '';
   const lock = c.protectedBy ? '🔒 ' : '';
   const steps = [];
-  if (c.protectedBy) steps.push('🔒 Protected (' + c.protectedBy + ') – click to continue');
-  steps.push(lock + 'Click again to list for ' + c.price);
-  return stagedButton({ label: lock + 'Sell for ' + c.price, steps, run: async () => {
+  if (c.protectedBy) steps.push('🔒 Protected – click again');
+  steps.push(lock + 'Confirm ' + c.price);
+  return stagedButton({ label: lock + 'Sell for ' + c.price, steps, tip: c.protectedBy ? 'Protected: ' + c.protectedBy : 'List at your sell percentage for the default listing length', run: async () => {
     window.__valuesBusy = true;
     const r = await api('/api/sell', { method: 'POST', body: JSON.stringify({ cardId: c.cardId, force: Boolean(c.protectedBy) }) });
     window.__valuesBusy = false;
-    return r.ok ? { ok: true, done: 'Listed for ' + r.data.price + ' (' + r.data.slotsLeft + ' slot(s) left)' } : { ok: false, error: r.data.error };
+    return r.ok ? { ok: true, done: 'Listed · ' + r.data.price } : { ok: false, error: r.data.error };
   } });
 }
 
@@ -447,13 +458,13 @@ async function loadValues() {
     const ago = (t) => { if (!t) return 'not yet'; const m = Math.round((Date.now() - t) / 60000); return m < 60 ? m + ' min ago' : Math.round(m / 60) + ' h ago'; };
     const tile = (label, n, sub) => h('div', { class: 'stat' }, h('b', {}, n), h('span', {}, label + (sub ? ' · ' + sub : '')));
     const rows = d.cards.map((c) => h('tr', {},
-      h('td', {}, c.title + (c.shiny ? ' ★' : '') + (c.count > 1 ? ' ×' + c.count : '')),
+      h('td', { title: c.title }, c.title + (c.shiny ? ' ★' : '') + (c.count > 1 ? ' ×' + c.count : '')),
       h('td', {}, h('span', { class: 'chip' }, c.rarity ?? '')),
       h('td', {}, c.average != null ? h('b', {}, String(c.average)) : h('span', { class: 'hint' }, c.checkedAt ? 'no sales yet' : 'checking…')),
       h('td', {}, c.average != null ? String(Math.round(c.average * 0.75)) : ''),
-      h('td', { class: 'hint' }, c.protectedBy ?? ''),
+      h('td', { class: 'hint why', title: c.protectedBy ?? '' }, c.protectedBy ?? ''),
       h('td', { class: 'hint' }, c.checkedAt ? ago(c.checkedAt) : c.average != null ? 'queued for refresh' : 'not yet'),
-      h('td', {}, h('div', { style: 'display:flex;gap:6px;flex-wrap:wrap;align-items:flex-start' }, sellButton(c), refreshButton(c), recycleButton(c)))));
+      h('td', { class: 'actions' }, sellButton(c), refreshButton(c), recycleButton(c))));
     $('#valuebox').replaceChildren(
       h('p', { class: 'hint' }, 'A rough idea of what your cards are worth: the average price each card has sold for on the marketplace, at its rarity. The bot checks one card every few seconds at first, then refreshes slowly (each value can be up to about 12 hours old).'),
       h('div', { class: 'grid' },
@@ -463,7 +474,7 @@ async function loadValues() {
         tile('Still checking', d.pending)),
       h('div', { style: 'margin-bottom:12px' }, h('button', { onclick: async (e) => { e.currentTarget.disabled = true; e.currentTarget.textContent = 'Refreshing at the normal pace (about 25 s per card)'; await api('/api/values/refresh', { method: 'POST', body: '{}' }); setTimeout(loadValues, 2000); } }, 'Refresh all prices')),
       rows.length
-        ? h('table', {}, h('thead', {}, h('tr', {}, ['Card', 'Rarity', 'Average sale price', '75% (sell price)', 'Protected', 'Checked', ''].map((x) => h('th', {}, x)))), h('tbody', {}, rows))
+        ? h('div', { style: 'overflow-x:auto' }, h('table', {}, h('thead', {}, h('tr', {}, ['Card', 'Rarity', 'Average sale price', '75% (sell price)', 'Protected', 'Checked', ''].map((x) => h('th', {}, x)))), h('tbody', {}, rows)))
         : h('p', { class: 'empty' }, 'Reading your collection… values appear here within a minute or two.'));
   } finally {
     window.__valuesBusy = false;
