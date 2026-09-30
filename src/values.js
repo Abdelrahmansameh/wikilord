@@ -17,6 +17,7 @@ export function startValues({ session, log, control = {}, isProtected = () => nu
   } catch {}
   let owned = []; // [{ cardId, title, rarity, shiny, count, pageviews, category }]
   let ownedAt = 0;
+  let rushing = false; // set by "Refresh all prices": re-check everything at the quick pace
   const save = () => {
     try {
       fs.writeFileSync(FILE, JSON.stringify(store));
@@ -59,13 +60,15 @@ export function startValues({ session, log, control = {}, isProtected = () => nu
         const stale = Date.now() - staleHours * 3600_000;
         const next = owned.find((c) => !store[c.cardId] || store[c.cardId].at < stale);
         if (!next) {
+          if (rushing) log('values: all prices refreshed');
+          rushing = false;
           await sleep(5 * 60_000);
           continue;
         }
         await lookup(next);
         save();
         // quick first pass (a few seconds per card), then a slow pace for refreshes
-        const firstPass = owned.some((c) => !store[c.cardId]);
+        const firstPass = rushing || owned.some((c) => !store[c.cardId]);
         await sleep(firstPass ? 3000 + Math.random() * 2000 : 20_000 + Math.random() * 10_000);
       } catch (e) {
         log('values:', e.message);
@@ -88,7 +91,7 @@ export function startValues({ session, log, control = {}, isProtected = () => nu
         pageviews: c.pageviews ?? 0, qScore: Number(c.card?.q_score ?? 0), atk: c.card?.atk ?? 0, def: c.card?.def ?? 0,
         title: c.title ?? '', category: c.category ?? '', price: 0 };
       const price = average != null ? Math.max(1, Math.round(average * (cfg?.sell?.priceFactor ?? 0.75))) : null;
-      return { cardId: c.cardId, title: c.title, rarity: c.rarity, shiny: c.shiny, count: c.count, average, price, checkedAt: v?.at ?? null, protectedBy: isProtected(facts), listed: (listedNow.get(c.cardId) ?? 0) > Date.now() };
+      return { cardId: c.cardId, title: c.title, rarity: c.rarity, shiny: c.shiny, count: c.count, average, price, checkedAt: v?.at || null, protectedBy: isProtected(facts), listed: (listedNow.get(c.cardId) ?? 0) > Date.now() };
     });
     rows.sort((a, b) => (b.average ?? -1) - (a.average ?? -1));
     const priced = rows.filter((r) => r.average != null);
@@ -130,5 +133,14 @@ export function startValues({ session, log, control = {}, isProtected = () => nu
     return { ok: true, price, minutes, slotsLeft: max - selling.length - 1 };
   }
 
-  return { getValues, sell };
+  /** Mark every price as out of date so the job re-checks all cards at the quick pace. */
+  function refreshAll() {
+    for (const k of Object.keys(store)) store[k].at = 0;
+    rushing = true;
+    ownedAt = 0; // re-read the collection too
+    log(`values: refreshing all prices (${owned.length} cards, a few seconds each)`);
+    return { ok: true, cards: owned.length };
+  }
+
+  return { getValues, sell, refreshAll };
 }

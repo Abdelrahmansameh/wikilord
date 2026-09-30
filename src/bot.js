@@ -24,7 +24,7 @@ const recentBids = []; // local timestamps of sent bids
 let clock = { offsetMs: 0, rttMs: 300, uncertaintyMs: 1000 };
 let balance = null;
 let sessionProblem = null;
-let values = { getValues: () => ({ cards: [], owned: 0, priced: 0, pending: 0, noHistory: 0, totalValue: 0 }), sell: async () => ({ ok: false, error: 'still starting up' }) };
+let values = { getValues: () => ({ cards: [], owned: 0, priced: 0, pending: 0, noHistory: 0, totalValue: 0 }), sell: async () => ({ ok: false, error: 'still starting up' }), refreshAll: () => ({ ok: false, error: 'still starting up' }) };
 let wishlist = new Set();
 let wishlistTitles = [];
 let spentToday = { day: '', won: 0 }; // won = price of auctions won today; refunded bids never count
@@ -506,6 +506,7 @@ async function main() {
       session,
       getValues: () => values.getValues(),
       sellCard: (cardId, opts) => values.sell(cardId, opts),
+      refreshValues: () => values.refreshAll(),
       onConnected: () => {
         sessionProblem = null;
         if (!cfg.myUserId) cfg.myUserId = session.readAuth()?.user?.id ?? '';
