@@ -249,7 +249,8 @@ function schedule(a, decision) {
   const wait = fireAt - Date.now();
   if (wait < -1000) return void log(`skip (too late by ${(-wait / 1000).toFixed(1)}s): ${describe(a)}`);
 
-  const preAt = Math.max(0, wait - Math.max(T.preCheckLeadMs, clock.rttMs * 2 + 1500));
+  // re-check early enough for a slow site: ~2 list requests' worth of time before firing
+  const preAt = Math.max(0, wait - Math.max(T.preCheckLeadMs, clock.rttMs * 2 + 1500, listLatency * 2 + 2000));
   const plan = { endAt: a.end_at, rule: decision.rule, amount: decision.amount, auction: a, fireAt };
   plan.timer = setTimeout(() => preCheck(a.id), preAt);
   plans.set(a.id, plan);
@@ -261,8 +262,13 @@ async function preCheck(id) {
   const plan = plans.get(id);
   if (!plan) return;
   let a = plan.auction;
+  // The re-check must never make us miss the snipe: if the site has not answered by the time we should fire,
+  // fire on the plan we already have.
+  const lookup = Promise.all([getAuction(id), refreshBalance().catch(() => {})]).then(([fresh]) => fresh);
   try {
-    [a] = await Promise.all([getAuction(id), refreshBalance().catch(() => {})]);
+    const fresh = await Promise.race([lookup, sleep(Math.max(0, plan.fireAt - Date.now() - 150)).then(() => null)]);
+    if (fresh) a = fresh;
+    else log(`re-check still waiting on the site; firing on the plan: ${describe(a)}`);
   } catch (e) {
     log(`preCheck lookup failed (${e.message}); firing on the original plan`);
   }
@@ -278,7 +284,12 @@ async function fireWhenReady(a, decision) {
   const oneWay = Math.max(clock.rttMs / 2 + T.extraBidLatencyMs, bidLatencyMs());
   const fireAt = endMs - T.targetRemainingMs - oneWay - clock.offsetMs + jitter();
   let wait = fireAt - Date.now();
-  if (wait < -500) return void (plans.delete(a.id), log(`missed window by ${(-wait / 1000).toFixed(1)}s: ${describe(a)}`));
+  if (wait < -500) {
+    // Late (slow site). Bidding late only extends the auction, which beats not bidding at all.
+    if (endMs - serverNow() < 2500) return void (plans.delete(a.id), log(`missed: auction ending in under 2.5s: ${describe(a)}`));
+    log(`running ${(-wait / 1000).toFixed(1)}s late (slow site), bidding anyway: ${describe(a)}`);
+    return void (await placeBid(a, decision, fireAt));
+  }
   if (wait > 30) await sleep(wait - 25);
   while (Date.now() < fireAt) {} // spin for the last few ms
   await placeBid(a, decision, fireAt);
