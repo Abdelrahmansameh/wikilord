@@ -370,6 +370,30 @@ async function loadCards() {
 }
 
 /* ---------- value: rough market value of owned cards ---------- */
+/** Sell button: only for unprotected cards with a price; asks for a second click, then lists it. */
+function sellButton(c) {
+  if (c.listed) return h('span', { class: 'good' }, 'on sale');
+  if (c.protectedBy || c.price == null) return '';
+  const msg = h('div', { class: 'hint' });
+  const btn = h('button', { onclick: async (e) => {
+    const b = e.currentTarget;
+    if (!b.dataset.armed) {
+      b.dataset.armed = '1';
+      b.textContent = 'Click again to list for ' + c.price;
+      setTimeout(() => { if (b.isConnected && b.dataset.armed) { delete b.dataset.armed; b.textContent = 'Sell for ' + c.price; } }, 4000);
+      return;
+    }
+    b.disabled = true;
+    b.textContent = 'Listing…';
+    window.__valuesBusy = true;
+    const r = await api('/api/sell', { method: 'POST', body: JSON.stringify({ cardId: c.cardId }) });
+    window.__valuesBusy = false;
+    if (r.ok) { b.replaceWith(h('span', { class: 'good' }, 'Listed for ' + r.data.price + ' (' + r.data.slotsLeft + ' slot(s) left)')); }
+    else { b.disabled = false; delete b.dataset.armed; b.textContent = 'Sell for ' + c.price; msg.className = 'err'; msg.textContent = r.data.error; }
+  } }, 'Sell for ' + c.price);
+  return h('div', {}, btn, msg);
+}
+
 async function loadValues() {
   window.__valuesBusy = true;
   try {
@@ -385,7 +409,8 @@ async function loadValues() {
       h('td', {}, c.average != null ? h('b', {}, String(c.average)) : h('span', { class: 'hint' }, c.checkedAt ? 'no sales yet' : 'checking…')),
       h('td', {}, c.average != null ? String(Math.round(c.average * 0.75)) : ''),
       h('td', { class: 'hint' }, c.protectedBy ?? ''),
-      h('td', { class: 'hint' }, ago(c.checkedAt))));
+      h('td', { class: 'hint' }, ago(c.checkedAt)),
+      h('td', {}, sellButton(c))));
     $('#valuebox').replaceChildren(
       h('p', { class: 'hint' }, 'A rough idea of what your cards are worth: the average price each card has sold for on the marketplace, at its rarity. The bot checks one card every few seconds at first, then refreshes slowly (each value can be up to about 12 hours old).'),
       h('div', { class: 'grid' },
@@ -394,7 +419,7 @@ async function loadValues() {
         tile('Priced', d.priced, d.noHistory ? d.noHistory + ' with no sales yet' : ''),
         tile('Still checking', d.pending)),
       rows.length
-        ? h('table', {}, h('thead', {}, h('tr', {}, ['Card', 'Rarity', 'Average sale price', '75% (sell price)', 'Protected', 'Checked'].map((x) => h('th', {}, x)))), h('tbody', {}, rows))
+        ? h('table', {}, h('thead', {}, h('tr', {}, ['Card', 'Rarity', 'Average sale price', '75% (sell price)', 'Protected', 'Checked', ''].map((x) => h('th', {}, x)))), h('tbody', {}, rows))
         : h('p', { class: 'empty' }, 'Reading your collection… values appear here within a minute or two.'));
   } finally {
     window.__valuesBusy = false;

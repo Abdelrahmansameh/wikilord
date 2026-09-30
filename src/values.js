@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { cardEvent } from './history.js';
 
 const FILE = new URL('../values.json', import.meta.url);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -8,7 +9,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  * A slow background job looks up one card at a time and keeps the results in values.json, so the
  * numbers are approximate and can be hours old, which is fine for an overview.
  */
-export function startValues({ session, log, control = {}, isProtected = () => null, staleHours = 12 }) {
+export function startValues({ session, log, control = {}, isProtected = () => null, staleHours = 12, cfg }) {
+  const listedNow = new Set(); // card ids put on sale from the Value tab in this run
   let store = {};
   try {
     store = JSON.parse(fs.readFileSync(FILE, 'utf8'));
@@ -31,7 +33,7 @@ export function startValues({ session, log, control = {}, isProtected = () => nu
       cards.push(...r.json.collection);
     }
     owned = cards.map((e) => ({
-      cardId: e.card_id, title: e.card?.wikipedia_title, rarity: e.card?.rarity, shiny: e.is_shiny, count: e.count ?? 1,
+      cardId: e.card_id, userCardId: e.id, title: e.card?.wikipedia_title, rarity: e.card?.rarity, shiny: e.is_shiny, count: e.count ?? 1,
       pageviews: e.card?.pageviews, category: e.card?.category, starred: e.starred, tagged: (e.tags ?? []).length > 0,
       card: e.card,
     }));
@@ -73,15 +75,20 @@ export function startValues({ session, log, control = {}, isProtected = () => nu
   }
   setTimeout(loop, 45_000);
 
+  const factsOf = (c) => ({ cardId: c.cardId, rarity: c.rarity, shiny: Boolean(c.shiny), starred: Boolean(c.starred), tagged: c.tagged,
+    pageviews: c.pageviews ?? 0, qScore: Number(c.card?.q_score ?? 0), atk: c.card?.atk ?? 0, def: c.card?.def ?? 0,
+    title: c.title ?? '', category: c.category ?? '', price: 0 });
+
   /** Owned cards with their average sale price (at their own rarity), most valuable first. */
-  return function getValues() {
+  function getValues() {
     const rows = owned.map((c) => {
       const v = store[c.cardId];
       const average = v?.summary?.[c.rarity]?.average ?? null;
       const facts = { cardId: c.cardId, rarity: c.rarity, shiny: Boolean(c.shiny), starred: Boolean(c.starred), tagged: c.tagged,
         pageviews: c.pageviews ?? 0, qScore: Number(c.card?.q_score ?? 0), atk: c.card?.atk ?? 0, def: c.card?.def ?? 0,
         title: c.title ?? '', category: c.category ?? '', price: 0 };
-      return { title: c.title, rarity: c.rarity, shiny: c.shiny, count: c.count, average, checkedAt: v?.at ?? null, protectedBy: isProtected(facts) };
+      const price = average != null ? Math.max(1, Math.round(average * (cfg?.sell?.priceFactor ?? 0.75))) : null;
+      return { cardId: c.cardId, title: c.title, rarity: c.rarity, shiny: c.shiny, count: c.count, average, price, checkedAt: v?.at ?? null, protectedBy: isProtected(facts), listed: listedNow.has(c.cardId) };
     });
     rows.sort((a, b) => (b.average ?? -1) - (a.average ?? -1));
     const priced = rows.filter((r) => r.average != null);
@@ -94,5 +101,33 @@ export function startValues({ session, log, control = {}, isProtected = () => nu
       totalValue: priced.reduce((s, r) => s + r.average * (r.count ?? 1), 0),
       ownedAt,
     };
-  };
+  }
+
+  /**
+   * Put one owned card on sale, only when asked from the dashboard. Uses the sell settings (price share and
+   * listing length). Refuses protected cards, cards without a price, and when all listing slots are used.
+   */
+  async function sell(cardId) {
+    const c = owned.find((x) => x.cardId === cardId);
+    if (!c) return { ok: false, error: 'card not found in your collection (it may have been recycled or sold)' };
+    const why = isProtected(factsOf(c));
+    if (why) return { ok: false, error: `this card is protected (${why})` };
+    const average = store[c.cardId]?.summary?.[c.rarity]?.average;
+    if (average == null) return { ok: false, error: 'no sales history for this card yet, so there is no price to use' };
+    const price = Math.max(1, Math.round(average * (cfg?.sell?.priceFactor ?? 0.75)));
+    const minutes = cfg?.sell?.durationMinutes ?? 60;
+    const mine = await session.request('GET', '/api/marketplace?page=1&limit=1&mine=1');
+    const selling = mine.json?.selling ?? [];
+    const max = mine.json?.maxConcurrentAuctions ?? 5;
+    if (selling.some((a) => a.card_id === c.cardId)) return { ok: false, error: 'this card is already on sale' };
+    if (selling.length >= max) return { ok: false, error: `all ${max} listing slots are in use` };
+    const r = await session.request('POST', '/api/marketplace', { json: { card_id: c.userCardId, base_amount: price, duration_minutes: minutes } });
+    if (r.status !== 201 || !r.json?.auction_id) return { ok: false, error: `the site refused (HTTP ${r.status}): ${r.json?.error ?? r.text.slice(0, 120)}` };
+    listedNow.add(c.cardId);
+    cardEvent('listed', { cardId: c.cardId, title: c.title, rarity: c.rarity, price, average, minutes, rule: 'manual (Value tab)' });
+    log(`LISTED ${c.title} [${c.rarity}] for ${price} (avg ${average}, ${minutes} min) from the Value tab`);
+    return { ok: true, price, minutes, slotsLeft: max - selling.length - 1 };
+  }
+
+  return { getValues, sell };
 }
