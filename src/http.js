@@ -196,6 +196,13 @@ export class Session {
       });
       const j = await res.json().catch(() => ({}));
       if (!res.ok || !j.access_token) {
+        // A 5xx (e.g. 525) is the auth server having a moment, not a bad login: keep using the current token
+        // while it is still valid and try again in a minute.
+        if (res.status >= 500 && left > 90) {
+          this.renewWhenLeftSec = Math.max(60, left - 60);
+          (this.onLog ?? console.log)(`session refresh hit a server error (HTTP ${res.status}); still valid for ${Math.round(left / 60)} min, retrying in ~1 min`);
+          return;
+        }
         throw new Error(`token refresh failed (HTTP ${res.status}). Paste a fresh cookie on the dashboard's Connect tab.`);
       }
       this.writeAuth(j);
