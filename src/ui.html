@@ -106,7 +106,7 @@ const SETTINGS = [
     ['timing.pollSeconds', 'num', 'Poll interval (s)', 'Restart needed.'],
   ]],
   ['Safety limits', [
-    ['global.dailySpendCap', 'num', 'Daily spend cap', 'Resets when the bot restarts.'],
+    ['global.dailySpendCap', 'num', 'Daily spend cap', 'Counts auctions you won today plus bids still held. Bids you are outbid on (and get refunded) do not count. Resets at midnight UTC and when the bot restarts.'],
     ['global.reserveBalance', 'num', 'Balance to always keep'],
     ['global.maxSnipesPerHour', 'num', 'Max bids per hour'],
     ['global.minGapBetweenBidsMs', 'num', 'Minimum gap between bids (ms)'],
@@ -185,7 +185,7 @@ function renderDashboard() {
   const s = state; if (!s) return h('p', { class: 'empty' }, 'Connecting…');
   const bidRows = s.recentBids.map((b) => h('tr', {},
     h('td', {}, clock(b.at)), h('td', {}, b.title ?? b.id?.slice(0, 8)), h('td', {}, b.amount),
-    h('td', {}, b.dry ? 'dry-run' : b.status === 200 ? 'bid placed' : `failed (${b.status})`),
+    h('td', {}, b.dry ? 'dry-run' : b.status === 200 ? 'bid placed' : `failed${b.status ? ' (HTTP ' + b.status + ')' : ''}${b.body?.error ? ': ' + b.body.error : ''}`),
     h('td', {}, b.predictedRemainingMs ? `${(b.predictedRemainingMs / 1000).toFixed(1)}s before end` : ''),
     h('td', {}, b.extendedMs ? h('span', { class: 'err' }, `extended +${b.extendedMs / 1000}s`) : b.extendedMs === 0 ? h('span', { class: 'good' }, 'no') : '')));
   const planRows = s.plans.map((p) => h('tr', {},
@@ -194,7 +194,7 @@ function renderDashboard() {
   return h('div', {},
     !s.connected && h('div', { class: 'banner' }, h('span', {}, '⚠ ' + (s.sessionProblem ?? 'Not connected.')), h('button', { class: 'primary', onclick: () => { tab = 'connect'; draw(); } }, 'Connect now')),
     h('div', { class: 'grid' },
-      stat('Balance', s.balance), stat('Spent today', `${s.spentToday} / ${s.dailySpendCap}`),
+      stat('Balance', s.balance), stat('Committed today', `${s.spentToday} / ${s.dailySpendCap}`, 'won + held'),
       stat('Bids placed', s.stats.bidsOk, s.stats.bidsFailed ? `${s.stats.bidsFailed} failed` : ''),
       stat('Packs opened', s.stats.packs), stat('Cards recycled', s.stats.recycled),
       stat('Wishlist cards', s.wishlistSize), stat('Session valid for', `${s.sessionMinLeft} min`),
@@ -205,6 +205,10 @@ function renderDashboard() {
       s.plans.length ? h('table', {}, h('thead', {}, h('tr', {}, ['Card', 'Rarity', 'Bid', 'Rule', 'Fires in', 'Auction ends'].map((x) => h('th', {}, x)))), h('tbody', {}, planRows)) : h('p', { class: 'empty' }, 'Nothing planned. The bot looks for matching auctions continuously.')),
     h('section', {}, h('h2', {}, 'Recent bids'),
       s.recentBids.length ? h('table', {}, h('thead', {}, h('tr', {}, ['Time', 'Card', 'Bid', 'Result', 'Landed', 'Extended?'].map((x) => h('th', {}, x)))), h('tbody', {}, bidRows)) : h('p', { class: 'empty' }, 'No bids yet.')),
+    (s.extensions || []).length ? h('section', {}, h('h2', {}, 'Auction extensions seen'),
+      h('p', { class: 'hint' }, 'When a bid lands in the last seconds the site moves the end time. This shows how much, so you can see how the extension works.'),
+      h('table', {}, h('thead', {}, h('tr', {}, ['Time', 'Card', 'End moved by', 'Time left when it happened'].map((x) => h('th', {}, x)))),
+        h('tbody', {}, s.extensions.map((e) => h('tr', {}, h('td', {}, clock(e.at)), h('td', {}, e.title ?? ''), h('td', {}, '+' + (e.movedMs / 1000) + 's'), h('td', {}, e.msLeftWhenSeen != null ? (e.msLeftWhenSeen / 1000).toFixed(1) + 's' : '')))))) : null,
     h('section', {}, h('h2', {}, 'Live log'), h('pre', { id: 'log' }, s.log.join('\n'))));
 }
 

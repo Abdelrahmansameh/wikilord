@@ -24,7 +24,7 @@ let balance = null;
 let sessionProblem = null;
 let wishlist = new Set();
 let wishlistTitles = [];
-let spentToday = { day: '', amount: 0 };
+let spentToday = { day: '', won: 0 }; // won = price of auctions won today; refunded bids never count
 let lastBidAt = 0;
 
 const ts = () => new Date().toISOString().slice(11, 23);
@@ -36,6 +36,17 @@ const log = (...a) => {
   if (logRing.length > 400) logRing.shift();
 };
 const control = { paused: false };
+
+/** Newest-first records from bids.jsonl (bids and auction end-time events share the file). */
+function recentRecords() {
+  try {
+    return fs.readFileSync(LOG, 'utf8').trim().split(String.fromCharCode(10)).slice(-80).map((l) => {
+      try { return JSON.parse(l); } catch { return null; }
+    }).filter(Boolean).reverse();
+  } catch {
+    return [];
+  }
+}
 const stats = { bidsOk: 0, bidsFailed: 0, packs: 0, recycled: 0, earned: 0, won: 0, lost: 0, wonSpent: 0, listed: 0, soldCount: 0, soldRevenue: 0 };
 const sellInfo = { active: 0, max: 5, preview: [], lastRunAt: null };
 const pendingBids = new Map(); // auction id -> { title, amount } for bids whose auction has not finished
@@ -121,14 +132,25 @@ async function getAuction(id) {
   throw new Error(`getAuction HTTP ${r.status} ${r.text.slice(0, 120)}`);
 }
 
-function budgetOk(amount, { skipGap = false } = {}) {
+function heldInBids(exceptAuctionId) {
+  let sum = 0;
+  for (const [id, p] of pendingBids) if (id !== exceptAuctionId) sum += p.amount;
+  return sum;
+}
+
+function committedToday(exceptAuctionId) {
   const day = new Date().toISOString().slice(0, 10);
-  if (spentToday.day !== day) spentToday = { day, amount: 0 };
+  if (spentToday.day !== day) spentToday = { day, won: 0 };
+  return spentToday.won + heldInBids(exceptAuctionId);
+}
+
+function budgetOk(amount, { skipGap = false, auctionId } = {}) {
   const now = Date.now();
   while (recentBids.length && now - recentBids[0] > 3600_000) recentBids.shift();
   if (recentBids.length >= cfg.global.maxSnipesPerHour) return 'hourly snipe cap';
   if (!skipGap && now - lastBidAt < cfg.global.minGapBetweenBidsMs) return 'min gap between bids';
-  if (spentToday.amount + amount > cfg.global.dailySpendCap) return 'daily spend cap';
+  const committed = committedToday(auctionId);
+  if (committed + amount > cfg.global.dailySpendCap) return `daily spend cap (${committed} already won or held + ${amount} > ${cfg.global.dailySpendCap})`;
   if (balance !== null && amount > balance - cfg.global.reserveBalance) return `balance ${balance} (reserve ${cfg.global.reserveBalance})`;
   return null;
 }
@@ -215,6 +237,8 @@ async function watchAuction(a, amount, ruleName) {
         if (cur.winner_id && cur.winner_id === cfg.myUserId) {
           stats.won++;
           stats.wonSpent += cur.final_price ?? amount;
+          committedToday(); // rolls the day over if needed
+          spentToday.won += cur.final_price ?? amount;
           log(`WON ${title} for ${cur.final_price ?? amount}`);
         } else {
           stats.lost++;
@@ -276,7 +300,7 @@ async function placeBid(a, decision, fireAt, { counter = false } = {}) {
     plans.delete(a.id);
     return void log(`PAUSED: skipped bid ${decision.amount} on ${describe(a)}`);
   }
-  const why = budgetOk(decision.amount);
+  const why = budgetOk(decision.amount, { auctionId: a.id });
   if (why) {
     plans.delete(a.id);
     return void log(`BLOCKED (${why}): ${describe(a)}`);
@@ -294,7 +318,7 @@ async function placeBid(a, decision, fireAt, { counter = false } = {}) {
   // "bid too low": the server says the minimum. Retry at once (still well before the last 10 s) if the rule's max allows it.
   if (r.status === 409 && r.json?.code === 'bid_too_low' && Number.isFinite(r.json.min)) {
     const max = cfg.rules.find((x) => x.name === decision.rule)?.bid?.max ?? 0;
-    const why2 = r.json.min > max ? `minimum ${r.json.min} is above this rule's max ${max}` : budgetOk(r.json.min, { skipGap: true });
+    const why2 = r.json.min > max ? `minimum ${r.json.min} is above this rule's max ${max}` : budgetOk(r.json.min, { skipGap: true, auctionId: a.id });
     if (!why2) {
       log(`bid ${decision.amount} was too low (minimum ${r.json.min}); retrying at ${r.json.min}`);
       decision = { ...decision, amount: r.json.min };
@@ -304,7 +328,6 @@ async function placeBid(a, decision, fireAt, { counter = false } = {}) {
   const ok = r.status === 200 && r.json?.current_bid !== undefined;
   if (ok) {
     balance = r.json.bidder_balance ?? balance;
-    spentToday.amount += decision.amount;
   }
   ok ? stats.bidsOk++ : stats.bidsFailed++;
   if (ok) {
@@ -387,15 +410,14 @@ async function main() {
           heldInBids: [...pendingBids.values()].reduce((s, p) => s + p.amount, 0),
         },
         sell: { enabled: cfg.sell.enabled, active: sellInfo.active, max: sellInfo.max, listed: stats.listed, soldCount: stats.soldCount, soldRevenue: stats.soldRevenue, factor: cfg.sell.priceFactor, preview: sellInfo.preview, lastRunAt: sellInfo.lastRunAt },
-        spentToday: spentToday.amount,
+        spentToday: committedToday(),
         dailySpendCap: cfg.global.dailySpendCap,
         stats,
         plans: [...plans.entries()]
           .map(([id, p]) => ({ id, title: p.auction?.card?.wikipedia_title, rarity: p.auction?.snapshot_rarity, amount: p.amount, rule: p.rule, endAt: p.endAt, fireInSec: Math.round((p.fireAt - Date.now()) / 1000) }))
           .sort((x, y) => x.fireInSec - y.fireInSec),
-        recentBids: (() => {
-          try { return fs.readFileSync(LOG, 'utf8').trim().split(String.fromCharCode(10)).slice(-15).map((l) => JSON.parse(l)).reverse(); } catch { return []; }
-        })(),
+        recentBids: recentRecords().filter((r) => r.event === undefined).slice(0, 15),
+        extensions: recentRecords().filter((r) => r.event === 'extended').slice(0, 8),
         log: logRing.slice(-200),
       }),
     });
