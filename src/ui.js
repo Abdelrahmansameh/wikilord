@@ -34,8 +34,8 @@ export function startUI({ port, getState, control, log, session, onConnected, ge
       if (req.method === 'GET' && url.pathname === '/api/state') return send(res, 200, getState());
       if (req.method === 'GET' && url.pathname === '/api/values') return send(res, 200, getValues());
       if (req.method === 'POST' && url.pathname === '/api/sell') {
-        const { cardId } = JSON.parse((await readBody(req)) || '{}');
-        const r = await sellCard(cardId);
+        const { cardId, factor } = JSON.parse((await readBody(req)) || '{}');
+        const r = await sellCard(cardId, { factor });
         return send(res, r.ok ? 200 : 400, r);
       }
       if (req.method === 'GET' && url.pathname === '/api/cards-history') {

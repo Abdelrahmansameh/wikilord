@@ -107,14 +107,15 @@ export function startValues({ session, log, control = {}, isProtected = () => nu
    * Put one owned card on sale, only when asked from the dashboard. Uses the sell settings (price share and
    * listing length). Refuses protected cards, cards without a price, and when all listing slots are used.
    */
-  async function sell(cardId) {
+  async function sell(cardId, { factor } = {}) {
     const c = owned.find((x) => x.cardId === cardId);
     if (!c) return { ok: false, error: 'card not found in your collection (it may have been recycled or sold)' };
     const why = isProtected(factsOf(c));
     if (why) return { ok: false, error: `this card is protected (${why})` };
     const average = store[c.cardId]?.summary?.[c.rarity]?.average;
     if (average == null) return { ok: false, error: 'no sales history for this card yet, so there is no price to use' };
-    const price = Math.max(1, Math.round(average * (cfg?.sell?.priceFactor ?? 0.75)));
+    const share = Number.isFinite(factor) && factor > 0 && factor <= 2 ? factor : cfg?.sell?.priceFactor ?? 0.75;
+    const price = Math.max(1, Math.round(average * share));
     const minutes = cfg?.sell?.durationMinutes ?? 60;
     const mine = await session.request('GET', '/api/marketplace?page=1&limit=1&mine=1');
     const selling = mine.json?.selling ?? [];

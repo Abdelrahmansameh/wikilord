@@ -505,7 +505,7 @@ async function main() {
       log,
       session,
       getValues: () => values.getValues(),
-      sellCard: (cardId) => values.sell(cardId),
+      sellCard: (cardId, opts) => values.sell(cardId, opts),
       onConnected: () => {
         sessionProblem = null;
         if (!cfg.myUserId) cfg.myUserId = session.readAuth()?.user?.id ?? '';
