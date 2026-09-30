@@ -228,11 +228,12 @@ function committedToday(exceptAuctionId) {
   return spentToday.won + heldInBids(exceptAuctionId);
 }
 
-function budgetOk(amount, { skipGap = false, auctionId } = {}) {
+function budgetOk(amount, { skipGap = false, auctionId, counter = false } = {}) {
   const now = Date.now();
   while (recentBids.length && now - recentBids[0] > 3600_000) recentBids.shift();
-  if (recentBids.length >= cfg.global.maxSnipesPerHour) return 'hourly snipe cap';
-  if (!skipGap && now - lastBidAt < cfg.global.minGapBetweenBidsMs) return 'min gap between bids';
+  // counter-bids are already limited per auction (global.counters), so the hourly cap only applies to new snipes
+  if (!counter && recentBids.length >= cfg.global.maxSnipesPerHour) return 'hourly snipe cap';
+  if (!skipGap && !counter && now - lastBidAt < cfg.global.minGapBetweenBidsMs) return 'min gap between bids';
   const committed = committedToday(auctionId);
   if (committed + amount > cfg.global.dailySpendCap) return `daily spend cap (${committed} already won or held + ${amount} > ${cfg.global.dailySpendCap})`;
   if (balance !== null && amount > balance - cfg.global.reserveBalance) return `balance ${balance} (reserve ${cfg.global.reserveBalance})`;
@@ -397,7 +398,7 @@ async function placeBid(a, decision, fireAt, { counter = false } = {}) {
     plans.delete(a.id);
     return void log(`PAUSED: skipped bid ${decision.amount} on ${describe(a)}`);
   }
-  const why = budgetOk(decision.amount, { auctionId: a.id });
+  const why = budgetOk(decision.amount, { auctionId: a.id, counter });
   if (why) {
     plans.delete(a.id);
     return void log(`BLOCKED (${why}): ${describe(a)}`);
@@ -415,7 +416,7 @@ async function placeBid(a, decision, fireAt, { counter = false } = {}) {
   // "bid too low": the server says the minimum. Retry at once (still well before the last 10 s) if the rule's max allows it.
   if (r.status === 409 && r.json?.code === 'bid_too_low' && Number.isFinite(r.json.min)) {
     const max = cfg.rules.find((x) => x.name === decision.rule)?.bid?.max ?? 0;
-    const why2 = r.json.min > max ? `minimum ${r.json.min} is above this rule's max ${max}` : budgetOk(r.json.min, { skipGap: true, auctionId: a.id });
+    const why2 = r.json.min > max ? `minimum ${r.json.min} is above this rule's max ${max}` : budgetOk(r.json.min, { skipGap: true, auctionId: a.id, counter });
     if (!why2) {
       log(`bid ${decision.amount} was too low (minimum ${r.json.min}); retrying at ${r.json.min}`);
       decision = { ...decision, amount: r.json.min };
