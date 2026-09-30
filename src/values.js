@@ -10,7 +10,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
  * numbers are approximate and can be hours old, which is fine for an overview.
  */
 export function startValues({ session, log, control = {}, isProtected = () => null, staleHours = 12, cfg }) {
-  const listedNow = new Set(); // card ids put on sale from the Value tab in this run
+  const listedNow = new Map(); // card id -> time its listing ends (put on sale from the Value tab)
   let store = {};
   try {
     store = JSON.parse(fs.readFileSync(FILE, 'utf8'));
@@ -88,7 +88,7 @@ export function startValues({ session, log, control = {}, isProtected = () => nu
         pageviews: c.pageviews ?? 0, qScore: Number(c.card?.q_score ?? 0), atk: c.card?.atk ?? 0, def: c.card?.def ?? 0,
         title: c.title ?? '', category: c.category ?? '', price: 0 };
       const price = average != null ? Math.max(1, Math.round(average * (cfg?.sell?.priceFactor ?? 0.75))) : null;
-      return { cardId: c.cardId, title: c.title, rarity: c.rarity, shiny: c.shiny, count: c.count, average, price, checkedAt: v?.at ?? null, protectedBy: isProtected(facts), listed: listedNow.has(c.cardId) };
+      return { cardId: c.cardId, title: c.title, rarity: c.rarity, shiny: c.shiny, count: c.count, average, price, checkedAt: v?.at ?? null, protectedBy: isProtected(facts), listed: (listedNow.get(c.cardId) ?? 0) > Date.now() };
     });
     rows.sort((a, b) => (b.average ?? -1) - (a.average ?? -1));
     const priced = rows.filter((r) => r.average != null);
@@ -124,7 +124,7 @@ export function startValues({ session, log, control = {}, isProtected = () => nu
     if (selling.length >= max) return { ok: false, error: `all ${max} listing slots are in use` };
     const r = await session.request('POST', '/api/marketplace', { json: { card_id: c.userCardId, base_amount: price, duration_minutes: minutes } });
     if (r.status !== 201 || !r.json?.auction_id) return { ok: false, error: `the site refused (HTTP ${r.status}): ${r.json?.error ?? r.text.slice(0, 120)}` };
-    listedNow.add(c.cardId);
+    listedNow.set(c.cardId, Date.now() + (minutes + 3) * 60_000); // after that it shows as sellable again (e.g. unsold)
     cardEvent('listed', { cardId: c.cardId, title: c.title, rarity: c.rarity, price, average, minutes, rule: 'manual (Value tab)' });
     log(`LISTED ${c.title} [${c.rarity}] for ${price} (avg ${average}, ${minutes} min) from the Value tab`);
     return { ok: true, price, minutes, slotsLeft: max - selling.length - 1 };
