@@ -43,13 +43,12 @@ const control = { paused: false };
  * bot stops scanning for two minutes, so its own requests never make a struggling site slower.
  */
 let listLatency = 300;
-let coolUntil = 0;
-let lastCoolLog = 0;
 function noteLatency(ms) {
   listLatency = 0.7 * listLatency + 0.3 * ms;
-  if (listLatency > 2500) coolUntil = Date.now() + 120_000;
 }
-const siteBusy = () => Date.now() < coolUntil;
+// Requests are strictly one at a time, so the bot never piles load on the site. Pausing scans when the site is
+// slow stopped the bot from finding anything (the site is often slow for long stretches), so scans always run.
+const siteBusy = () => false;
 
 /** Recent bid round-trip times: when the site is slow to process bids we must send earlier. */
 const recentBidRtts = [];
@@ -118,9 +117,11 @@ async function listAuctions(maxPages = T.maxPages) {
   const started = Date.now();
   for (let p = 1; p <= maxPages; p++) {
     const j = await fetchPage(p);
-    out.push(...j.auctions);
+    // After a wave of auctions ends, the first pages are full of ended-but-unsettled auctions: skip them.
+    const now = Date.now() + clock.offsetMs;
+    out.push(...j.auctions.filter((a) => Date.parse(a.end_at) > now));
     if (!j.hasMore || !j.auctions.length || Date.parse(j.auctions.at(-1).end_at) > horizon) break;
-    if (Date.now() - started > (T.scanBudgetSeconds ?? 20) * 1000 || siteBusy()) break; // site is slow: soonest auctions first is enough
+    if (Date.now() - started > (T.scanBudgetSeconds ?? 20) * 1000) break; // site is slow: soonest auctions first is enough
   }
   return out;
 }
@@ -430,13 +431,6 @@ async function poll(withWishlist = true) {
 }
 
 async function pollOnce(withWishlist) {
-  if (siteBusy()) {
-    if (Date.now() - lastCoolLog > 110_000) {
-      lastCoolLog = Date.now();
-      log(`site is slow (list requests average ${(listLatency / 1000).toFixed(1)}s): pausing scans for ~2 min to ease its load. Planned bids still fire.`);
-    }
-    return;
-  }
   const near = await listAuctions();
   const wl = withWishlist ? await wishlistAuctions() : [];
   const wlIds = new Set(wl.map((a) => a.id));
@@ -456,7 +450,7 @@ async function pollOnce(withWishlist) {
     schedule(a, d);
     planned++;
   }
-  log(`poll: ${list.length} auctions (${wl.length} from searches), ${planned} newly planned, ${plans.size} active plans`);
+  log(`poll: ${list.length} upcoming auctions (${wl.length} from searches), ${planned} newly planned, ${plans.size} active plans, site ~${(listLatency / 1000).toFixed(1)}s per request`);
 }
 
 async function main() {

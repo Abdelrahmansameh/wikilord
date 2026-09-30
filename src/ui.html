@@ -430,12 +430,14 @@ async function poll() {
     if (tab === 'dashboard') { const l = $('#log'); const stick = !l || l.scrollTop + l.clientHeight >= l.scrollHeight - 30; drawView(); if (stick) { const n = $('#log'); if (n) n.scrollTop = n.scrollHeight; } }
   } else { $('#mode').textContent = 'offline'; $('#mode').className = 'badge paused'; }
 }
-async function loadConfig() { const r = await api('/api/config'); cfg = r.data; orig = JSON.stringify(cfg); dirty = false; $('#savebar').classList.remove('show'); draw(); }
+let cfgVersion = null;
+async function loadConfig() { const r = await api('/api/config'); cfg = r.data.config; cfgVersion = r.data.version; orig = JSON.stringify(cfg); dirty = false; $('#savebar').classList.remove('show'); draw(); }
 
 $('#pause').onclick = async () => { await api('/api/pause', { method: 'POST', body: JSON.stringify({ paused: !state?.paused }) }); poll(); };
 $('#discard').onclick = () => loadConfig();
 $('#save').onclick = async () => {
-  const r = await api('/api/config', { method: 'PUT', body: JSON.stringify(cfg) });
+  const r = await api('/api/config', { method: 'PUT', body: JSON.stringify({ version: cfgVersion, config: cfg }) });
+  if (r.ok) cfgVersion = r.data.version;
   const m = $('#savemsg');
   if (r.ok) { m.textContent = 'Saved. The bot applies it within a few seconds.'; m.className = 'good'; dirty = false; setTimeout(() => $('#savebar').classList.remove('show'), 2500); }
   else { m.textContent = 'Not saved: ' + (r.data.errors ?? [r.data.error]).join('; '); m.className = 'err'; }

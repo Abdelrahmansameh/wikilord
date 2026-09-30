@@ -36,16 +36,24 @@ export function startUI({ port, getState, control, log, session, onConnected }) 
         const q = url.searchParams;
         return send(res, 200, readCardEvents({ limit: Math.min(Number(q.get('limit')) || 300, 2000), type: q.get('type') || undefined, q: q.get('q') || undefined }));
       }
-      if (req.method === 'GET' && url.pathname === '/api/config') return send(res, 200, fs.readFileSync(CONFIG_PATH, 'utf8'));
+      // The config comes with a version (file time) so a page opened long ago cannot overwrite newer settings.
+      const version = () => fs.statSync(CONFIG_PATH).mtimeMs;
+      if (req.method === 'GET' && url.pathname === '/api/config') {
+        return send(res, 200, { version: version(), config: JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8')) });
+      }
 
       if (req.method === 'PUT' && url.pathname === '/api/config') {
-        const next = JSON.parse(await readBody(req));
+        const body = JSON.parse(await readBody(req));
+        if (body.version !== version()) {
+          return send(res, 409, { error: 'the settings changed since this page loaded. Click Discard to load the current settings, then make your change again.' });
+        }
+        const next = body.config;
         const errors = validate(next);
         if (errors.length) return send(res, 400, { errors });
         fs.writeFileSync(CONFIG_PATH, JSON.stringify(next, null, 2));
         loadConfig(); // sanity: the file we just wrote must load
         log('config saved from the dashboard');
-        return send(res, 200, { ok: true });
+        return send(res, 200, { ok: true, version: version() });
       }
 
       if (req.method === 'POST' && url.pathname === '/api/cookie') {
