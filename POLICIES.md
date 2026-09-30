@@ -25,6 +25,7 @@ All listed conditions must be true. Leave `when` out to match everything.
 | `minQScore` / `maxQScore` | quality score |
 | `minAtk` / `maxAtk`, `minDef` / `maxDef` | stats |
 | `minPrice` / `maxCurrentPrice` | current auction price (bids only) |
+| `titleContains` | title contains this text, ignoring accents and case (e.g. `mathématiques`). The bot also **searches the marketplace for it**, so matching auctions are found however far away they end |
 | `titleRegex`, `categoryRegex` | case-insensitive regular expressions |
 
 Rules are checked **top to bottom, first match wins**. Put exceptions above general rules.

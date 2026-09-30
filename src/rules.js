@@ -1,5 +1,8 @@
 const price = (a) => a.effective_bid ?? a.current_bid ?? a.base_amount;
 
+/** Lower-case and strip accents so "mathématiques" matches "Mathematiques". */
+export const plain = (s) => String(s ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+
 /** Normalised facts about an auction, used by the shared matcher. */
 export const auctionFacts = (a) => ({
   cardId: a.card_id,
@@ -47,6 +50,7 @@ export function matches(when = {}, f, wishlist = new Set()) {
   if (when.maxDef !== undefined && f.def > when.maxDef) return false;
   if (when.minPrice !== undefined && f.price < when.minPrice) return false;
   if (when.maxCurrentPrice !== undefined && f.price > when.maxCurrentPrice) return false;
+  if (when.titleContains && !plain(f.title).includes(plain(when.titleContains))) return false;
   if (when.titleRegex && !new RegExp(when.titleRegex, 'i').test(f.title)) return false;
   if (when.categoryRegex && !new RegExp(when.categoryRegex, 'i').test(f.category)) return false;
   return true;

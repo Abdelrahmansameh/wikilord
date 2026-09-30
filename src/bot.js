@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import { Session } from './http.js';
 import { calibrate } from './clock.js';
-import { decide, describe } from './rules.js';
+import { decide, describe, plain } from './rules.js';
 import { startPacks } from './packs.js';
 import { loadConfig, watchConfig } from './config.js';
 import { startUI } from './ui.js';
@@ -83,13 +83,19 @@ async function refreshWishlist() {
 async function wishlistAuctions() {
   const out = new Map();
   // The site's search does not match the "(qualifier)" part of a title, so search on the text before it.
-  const queries = new Set(wishlistTitles.map((t) => (t.split('(')[0].trim() || t)));
-  for (const q of queries) {
-    const maxPages = q.length < 4 ? 20 : 5; // very short queries match a lot of auctions
+  // query text -> which results to keep. Wishlist titles keep wishlist cards; a rule's "titleContains" keeps titles containing it.
+  const searches = new Map();
+  for (const t of wishlistTitles) searches.set(t.split('(')[0].trim() || t, (a) => wishlist.has(a.card_id));
+  for (const rule of cfg.rules) {
+    const kw = rule.enabled !== false && rule.when?.titleContains;
+    if (kw && !searches.has(kw)) searches.set(kw, (a) => plain(a.card?.wikipedia_title).includes(plain(kw)));
+  }
+  for (const [q, keep] of searches) {
+    const maxPages = q.length < 4 ? 20 : 8; // very short queries match a lot of auctions
     for (let p = 1; p <= maxPages; p++) {
       const r = await session.request('GET', `/api/marketplace?page=${p}&limit=50&sort=ending_soon&q=${encodeURIComponent(q)}`);
       if (r.status !== 200 || !r.json?.auctions) break;
-      for (const a of r.json.auctions) if (wishlist.has(a.card_id)) out.set(a.id, a);
+      for (const a of r.json.auctions) if (keep(a)) out.set(a.id, a);
       if (!r.json.hasMore) break;
     }
   }

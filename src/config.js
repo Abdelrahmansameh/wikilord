@@ -6,7 +6,7 @@ const WHEN_KEYS = new Set([
   'wishlist', 'rarity', 'shiny', 'starred', 'tagged',
   'minPageviews', 'maxPageviews', 'minQScore', 'maxQScore',
   'minAtk', 'maxAtk', 'minDef', 'maxDef', 'minPrice', 'maxCurrentPrice',
-  'titleRegex', 'categoryRegex',
+  'titleRegex', 'categoryRegex', 'titleContains',
 ]);
 const RARITIES = new Set(['C', 'PC', 'R', 'SR', 'UR', 'L']);
 const TOP_KEYS = new Set(['dryRun', 'myUserId', 'timing', 'global', 'rules', 'packs', 'recycle', 'ui']);
@@ -21,6 +21,8 @@ function checkWhen(when, where, errors) {
       else for (const r of v) if (!RARITIES.has(String(r).toUpperCase())) errors.push(`${where}.when.rarity: "${r}" is not one of ${[...RARITIES].join(', ')}`);
     } else if (['wishlist', 'shiny', 'starred', 'tagged'].includes(k)) {
       if (typeof v !== 'boolean') errors.push(`${where}.when.${k} must be true or false`);
+    } else if (k === 'titleContains') {
+      if (typeof v !== 'string' || !v.trim()) errors.push(`${where}.when.titleContains must be some text, e.g. "mathématiques"`);
     } else if (k.endsWith('Regex')) {
       try { new RegExp(v, 'i'); } catch { errors.push(`${where}.when.${k}: invalid regular expression`); }
     } else if (typeof v !== 'number') errors.push(`${where}.when.${k} must be a number`);
