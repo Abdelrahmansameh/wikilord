@@ -1,8 +1,16 @@
+// Login session for the market collector. Adapted from the trading bot's src/http.js but self-contained:
+// its own .env and .session.json inside market-analyzer/, so the two bots never share a token.
 import fs from 'node:fs';
+import { ROOT } from './config.js';
 
 const BASE = 'https://www.wiki-masters.com';
-const SESSION_FILE = new URL('../.session.json', import.meta.url);
-const ENV_FILE = new URL('../.env', import.meta.url);
+const ENV_FILE = new URL('.env', ROOT);
+const accountFiles = (slot) => {
+  if (slot !== 'primary' && slot !== 'secondary') throw new Error('unknown account slot');
+  return slot === 'primary'
+    ? { env: ENV_FILE, session: new URL('.session.json', ROOT) }
+    : { env: new URL('.env.secondary', ROOT), session: new URL('.session.secondary.json', ROOT) };
+};
 const UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
 
@@ -19,16 +27,22 @@ function parseCookieHeader(str) {
   return jar;
 }
 
-function loadJar() {
+function readEnv(key, file = ENV_FILE) {
+  try {
+    const m = fs.readFileSync(file, 'utf8').match(new RegExp(`^${key}=(.*)$`, 'm'));
+    return m?.[1].trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+function loadJar(files) {
   // .session.json holds cookies refreshed by the server; prefer it over the original .env value.
   try {
-    return new Map(Object.entries(JSON.parse(fs.readFileSync(SESSION_FILE, 'utf8'))));
+    return new Map(Object.entries(JSON.parse(fs.readFileSync(files.session, 'utf8'))));
   } catch {}
-  try {
-    const m = fs.readFileSync(ENV_FILE, 'utf8').match(/^COOKIE=(.*)$/m);
-    if (m && m[1].trim()) return parseCookieHeader(m[1].trim());
-  } catch {}
-  return new Map(); // no login yet: the dashboard's Connect tab asks for it
+  const c = readEnv('COOKIE', files.env);
+  return c ? parseCookieHeader(c) : new Map();
 }
 
 /**
@@ -55,21 +69,21 @@ export function normalizeCookieInput(input) {
 export const cookieLooksRight = (str) => /sb-[a-z0-9]+-auth-token/i.test(str);
 
 /** Set KEY=value in .env, keeping every other line. */
-function saveEnv(pairs) {
+function saveEnv(pairs, file = ENV_FILE) {
   let lines = [];
   try {
-    lines = fs.readFileSync(ENV_FILE, 'utf8').split(/\r?\n/).filter((l) => l.trim() !== '');
+    lines = fs.readFileSync(file, 'utf8').split(/\r?\n/).filter((l) => l.trim() !== '');
   } catch {}
   for (const [k, v] of Object.entries(pairs)) {
     const i = lines.findIndex((l) => l.startsWith(k + '='));
     if (i >= 0) lines[i] = `${k}=${v}`;
     else lines.push(`${k}=${v}`);
   }
-  fs.writeFileSync(ENV_FILE, lines.join('\n') + '\n');
+  fs.writeFileSync(file, lines.join('\n') + '\n');
 }
 
 /** The site's public Supabase "anon" key ships in its JavaScript; find it so nobody has to. */
-export async function discoverAnonKey() {
+async function discoverAnonKey() {
   const get = (p) => fetch(BASE + p, { headers: { 'user-agent': UA } }).then((r) => r.text());
   const html = await get('/login');
   const srcs = [...new Set([...html.matchAll(/\/_next\/static\/[^"' <>]+\.js[^"' <>]*/g)].map((m) => m[0]))];
@@ -85,24 +99,17 @@ export async function discoverAnonKey() {
   throw new Error('could not find the site API key automatically');
 }
 
-function anonKey() {
-  const m = fs.readFileSync(ENV_FILE, 'utf8').match(/^SUPABASE_ANON_KEY=(.*)$/m);
-  if (!m) throw new Error('SUPABASE_ANON_KEY missing (it is fetched automatically on start)');
-  return m[1].trim();
-}
-
 const randomLeftSec = () => 300 + Math.random() * 2400; // renew 15-55 min after issue, never at a fixed time
 
 export class Session {
-  /** Set to true by the running bot only. */
-  static allowRenewal = false;
-
   /** `jar` given = in-memory session that never touches disk (used to test a pasted cookie). */
-  constructor(jar) {
+  constructor(jar, slot = 'primary') {
+    this.slot = slot;
+    this.files = accountFiles(slot);
     this.noPersist = Boolean(jar);
-    this.jar = jar ?? loadJar();
+    this.jar = jar ?? loadJar(this.files);
     this.renewWhenLeftSec = randomLeftSec();
-    this._waiters = [];
+    this.onLog = null;
   }
 
   hasCookie() {
@@ -111,11 +118,7 @@ export class Session {
 
   /** Make sure the public API key is known (fetched from the site once, then kept in .env). */
   async init() {
-    try {
-      anonKey();
-    } catch {
-      saveEnv({ SUPABASE_ANON_KEY: await discoverAnonKey() });
-    }
+    if (!readEnv('SUPABASE_ANON_KEY')) saveEnv({ SUPABASE_ANON_KEY: await discoverAnonKey() });
   }
 
   /** Check a pasted cookie against the site without saving anything. */
@@ -123,23 +126,18 @@ export class Session {
     const t = new Session(parseCookieHeader(cookieStr));
     t.renewWhenLeftSec = -Infinity; // a test must never rotate the real refresh token
     const r = await t.request('GET', '/api/wikibidous');
-    return { ok: r.status === 200 && typeof r.json?.balance === 'number', status: r.status, balance: r.json?.balance };
+    return { ok: r.status === 200 && typeof r.json?.balance === 'number', status: r.status, id: t.userId(), account: t.username() };
   }
 
   /** Replace the login (from the dashboard): saved to .env, and the old rotated session is dropped. */
   replaceCookie(cookieStr) {
-    saveEnv({ COOKIE: cookieStr });
+    saveEnv({ COOKIE: cookieStr }, this.files.env);
     try {
-      fs.unlinkSync(SESSION_FILE);
+      fs.unlinkSync(this.files.session);
     } catch {}
     this.jar = parseCookieHeader(cookieStr);
-    this._diskMtime = 0;
     this.renewWhenLeftSec = randomLeftSec();
-    this._waiters.splice(0).forEach((f) => f());
-  }
-
-  waitForCookie() {
-    return new Promise((resolve) => this._waiters.push(resolve));
+    this.refreshWarning = null;
   }
 
   /** Reassemble the Supabase session object stored across the chunked auth cookie. */
@@ -162,106 +160,69 @@ export class Session {
     }
   }
 
+  /** Username of the logged-in account, for the dashboard. */
+  username() {
+    const a = this.readAuth();
+    return a?.user?.user_metadata?.username ?? null;
+  }
+
+  userId() {
+    return this.readAuth()?.user?.id ?? null;
+  }
+
   writeAuth(sess) {
     for (const k of [...this.jar.keys()]) if (k === COOKIE_BASE || k.startsWith(COOKIE_BASE + '.')) this.jar.delete(k);
     const enc = 'base64-' + Buffer.from(JSON.stringify(sess), 'utf8').toString('base64url');
     for (let i = 0; i * CHUNK < enc.length; i++) this.jar.set(`${COOKIE_BASE}.${i}`, enc.slice(i * CHUNK, (i + 1) * CHUNK));
-    if (this.noPersist) return;
-    fs.writeFileSync(SESSION_FILE, JSON.stringify(Object.fromEntries(this.jar)));
-    this._diskMtime = fs.statSync(SESSION_FILE).mtimeMs;
+    this.persist();
   }
 
-  /** Pick up tokens rotated by another process sharing .session.json. */
-  syncFromDisk() {
-    if (this.noPersist) return;
-    try {
-      const m = fs.statSync(SESSION_FILE).mtimeMs;
-      if (m > (this._diskMtime ?? 0)) {
-        this._diskMtime = m;
-        this.jar = new Map(Object.entries(JSON.parse(fs.readFileSync(SESSION_FILE, 'utf8'))));
-      }
-    } catch {}
+  persist() {
+    if (!this.noPersist) fs.writeFileSync(this.files.session, JSON.stringify(Object.fromEntries(this.jar)));
   }
 
   /** Renew the access token via Supabase at a randomised point in its lifetime. */
-  async ensureFresh(force = false) {
-    this.syncFromDisk();
+  async ensureFresh() {
     const sess = this.readAuth();
     if (!sess?.refresh_token) return;
     const left = sess.expires_at - Date.now() / 1000;
-    // The site cancels the whole login if a renewal key is used twice, so only ONE program may renew it: the
-    // running bot (it sets Session.allowRenewal). Any other script (tools, checks, other agents) only reads
-    // the login the bot keeps up to date in .session.json.
-    if (!Session.allowRenewal && !this.noPersist) {
-      if (left <= 0) throw new Error('login expired and only the running bot renews it: start the bot, or reconnect on the Connect tab');
-      return;
-    }
-    if (!force && left > this.renewWhenLeftSec) return;
+    if (left > this.renewWhenLeftSec) return;
     if (this._refreshing) return this._refreshing;
+    const log = this.onLog ?? console.log;
     this._refreshing = (async () => {
+      const apikey = readEnv('SUPABASE_ANON_KEY');
+      if (!apikey) throw new Error('SUPABASE_ANON_KEY missing (it is fetched automatically on start)');
       const res = await fetch(`${SUPABASE}/auth/v1/token?grant_type=refresh_token`, {
         method: 'POST',
-        headers: { apikey: anonKey(), 'content-type': 'application/json' },
+        headers: { apikey, 'content-type': 'application/json' },
         body: JSON.stringify({ refresh_token: sess.refresh_token }),
       });
       const j = await res.json().catch(() => ({}));
       if (!res.ok || !j.access_token) {
-        // A 5xx (e.g. 525) is the auth server having a moment, not a bad login: keep using the current token
-        // while it is still valid and try again in a minute.
+        // A 5xx is the auth server having a moment, not a bad login: keep the current token while it lasts.
         if (res.status >= 500 && left > 90) {
           this.renewWhenLeftSec = Math.max(60, left - 60);
-          (this.onLog ?? console.log)(`session refresh hit a server error (HTTP ${res.status}); still valid for ${Math.round(left / 60)} min, retrying in ~1 min`);
+          log(`session refresh hit a server error (HTTP ${res.status}); retrying in ~1 min`);
           return;
         }
-        // Refused: maybe another program renewed first and saved the new login. Use it if so.
-        const usedKey = sess.refresh_token;
-        this._diskMtime = 0;
-        this.syncFromDisk();
-        const now = this.readAuth();
-        if (now?.refresh_token && now.refresh_token !== usedKey && now.expires_at - Date.now() / 1000 > 60) {
-          (this.onLog ?? console.log)('session refresh was refused but a newer login was already saved; using it');
+        // A rotated refresh token can fail while the existing access token still works.
+        // Use that token until shortly before expiry, and keep collection alive in the meantime.
+        if (left > 90) {
+          this.renewWhenLeftSec = 60;
+          this.refreshWarning = `refresh failed (HTTP ${res.status}); paste a fresh cookie before ${new Date(sess.expires_at * 1000).toLocaleTimeString()}`;
+          log(this.refreshWarning);
           return;
         }
-        const reason = j.error_description || j.msg || j.error || j.error_code || '';
-        throw new Error(`token refresh failed (HTTP ${res.status}${reason ? ': ' + reason : ''}). Paste a fresh cookie on the dashboard's Connect tab.`);
+        throw Object.assign(new Error(`token refresh failed (HTTP ${res.status}). Paste a fresh cookie on the dashboard.`), {
+          needsLogin: true,
+        });
       }
       this.writeAuth(j);
+      this.refreshWarning = null;
       this.renewWhenLeftSec = randomLeftSec();
-      const msg = `session refreshed (had ${Math.round(left / 60)} min left), valid for ${Math.round(j.expires_in / 60)} min, next renewal ~${Math.round((j.expires_in - this.renewWhenLeftSec) / 60)} min from now`;
-      (this.onLog ?? ((m) => console.log(new Date().toISOString().slice(11, 23), m)))(msg);
+      log(`session refreshed, valid for ${Math.round(j.expires_in / 60)} min`);
     })().finally(() => (this._refreshing = null));
     return this._refreshing;
-  }
-
-  /** Call a Supabase RPC as the logged-in user. */
-  rpc(name, body = {}) {
-    return this.supabase('POST', `rpc/${name}`, body);
-  }
-
-  /** Call Supabase's REST API (tables and RPCs) as the logged-in user, the same way the site's own page does. */
-  async supabase(method, path, body) {
-    await this.ensureFresh();
-    const sess = this.readAuth();
-    const res = await fetch(`${SUPABASE}/rest/v1/${path}`, {
-      method,
-      headers: {
-        apikey: anonKey(),
-        authorization: `Bearer ${sess?.access_token}`,
-        'content-type': 'application/json',
-        'content-profile': 'public',
-        'x-client-info': 'supabase-ssr/0.9.0 createBrowserClient',
-        origin: BASE,
-        referer: BASE + '/',
-        'user-agent': UA,
-      },
-      body: body === undefined ? undefined : JSON.stringify(body),
-    });
-    const text = await res.text();
-    let json;
-    try {
-      json = JSON.parse(text);
-    } catch {}
-    return { status: res.status, json, text };
   }
 
   cookieHeader() {
@@ -280,38 +241,27 @@ export class Session {
       if (expired) this.jar.delete(name);
       else this.jar.set(name, value);
     }
-    if (!this.noPersist) fs.writeFileSync(SESSION_FILE, JSON.stringify(Object.fromEntries(this.jar)));
+    this.persist();
   }
 
-  /** Returns { status, json, text, date, t0, t1 } with local ms timestamps around the request. */
-  async request(method, path, { json, cache = false } = {}) {
+  /** GET/POST against the site. Returns { status, json, text, location }. */
+  async request(method, path, { timeoutMs = 15000 } = {}) {
     await this.ensureFresh();
     const headers = {
       'user-agent': UA,
       accept: '*/*',
       'accept-language': 'fr-CA,fr;q=0.9,en;q=0.8',
-      cookie: this.cookieHeader(),
+      'cache-control': 'no-cache',
       referer: `${BASE}/marketplace`,
     };
-    if (json !== undefined) {
-      headers['content-type'] = 'application/json';
-      headers.origin = BASE;
-    }
-    if (!cache) headers['cache-control'] = 'no-cache';
-    const t0 = Date.now();
-    const res = await fetch(BASE + path, {
-      method,
-      headers,
-      body: json !== undefined ? JSON.stringify(json) : undefined,
-      redirect: 'manual',
-    });
+    if (this.jar.size) headers.cookie = this.cookieHeader();
+    const res = await fetch(BASE + path, { method, headers, redirect: 'manual', signal: AbortSignal.timeout(timeoutMs) });
     const text = await res.text();
-    const t1 = Date.now();
     this.absorb(res);
-    let body;
+    let json;
     try {
-      body = JSON.parse(text);
+      json = JSON.parse(text);
     } catch {}
-    return { status: res.status, json: body, text, date: res.headers.get('date'), t0, t1, location: res.headers.get('location') };
+    return { status: res.status, json, text, location: res.headers.get('location') };
   }
 }

@@ -28,11 +28,35 @@ npm start            # dry run: logs what it would do, changes nothing
 npm run live         # bids, opens packs and recycles for real (also needs "dryRun": false)
 npm run explain      # what the current rules would do right now (read-only)
 npm run check-config # validate config.json
+npm run agent -- help # find cards for a theme, manage targets (see AGENT.md)
 ```
 
 ## Going live
 
 The example config is safe by default: `dryRun` is `true` (the bot only logs what it would do) and recycling is off. When the rules look right, use **Settings → Force dry-run** (or set `"dryRun": false`), turn on **Recycle rules → enabled** if you want recycling, and restart.
+
+## Targets and the optional agent
+
+The **Targets** tab lets you list specific cards with a priority and a max bid, grouped in themes with weekly budgets (see [POLICIES.md](POLICIES.md#targets-targets-tab-targetsjson)). `limits.json` holds hard ceilings on every bid.
+
+On top of that, a Claude agent can run on a schedule and manage targets, themes, budgets and settings for you from a strategy you write in plain words. It is optional: the bot never depends on it, and if the agent stops running, the bot keeps following the last settings.
+
+- `strategy.md`: what you want (copy `strategy.example.md`). The agent reads it on every run.
+- [AGENT.md](AGENT.md): the agent's manual.
+- `npm run agent -- help`: the agent's commands (also handy by hand: `find`, `market`, `prices`, `status`...).
+- Every change (yours from the dashboard, or the agent's) is recorded in `journal.jsonl` and shown on the Targets tab.
+
+## Checking from your phone (read-only)
+
+`start-viewer.bat` runs a small status page for both the bot and the market analyzer on http://localhost:8790. It can only look: it reads a few things from the two dashboards and passes on a trimmed copy (no cookies, no settings), and refuses anything but GET. The full dashboards stay on this PC.
+
+To open it from your phone anywhere, use Tailscale (free): install it on the PC and the phone, sign in to the same account on both, then once on the PC:
+
+```
+tailscale serve --bg 8790
+```
+
+`tailscale serve status` shows the address (`https://<pc-name>.<tailnet>.ts.net`). Only devices signed in to your tailnet can open it; nothing is published to the internet (that would be `tailscale funnel`, don't use it). `tailscale serve --https=443 off` removes it. To limit it to specific Tailscale logins, set `VIEWER_ALLOW=you@example.com` before starting the viewer. The PC has to be awake.
 
 ## Notes
 

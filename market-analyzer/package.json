@@ -1,0 +1,14 @@
+{
+  "name": "wikimasters-market",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "description": "Records every auction that ends on the wiki-masters marketplace and serves a dashboard to analyse them.",
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning src/main.js",
+    "test": "node --disable-warning=ExperimentalWarning --test"
+  },
+  "engines": {
+    "node": ">=22.13"
+  }
+}

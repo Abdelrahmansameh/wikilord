@@ -7,7 +7,7 @@ import { readCardEvents } from './history.js';
 const PAGE = new URL('./ui.html', import.meta.url);
 
 /** Local-only dashboard. Listens on 127.0.0.1 and rejects cross-site requests. */
-export function startUI({ port, getState, control, log, session, onConnected, getValues = () => ({ cards: [] }), sellCard = async () => ({ ok: false, error: 'not available' }), refreshValues = () => ({ ok: false }), refreshValue = async () => ({ ok: false }), recycleCard = async () => ({ ok: false }) }) {
+export function startUI({ port, getState, control, log, session, onConnected, getValues = () => ({ cards: [] }), sellCard = async () => ({ ok: false, error: 'not available' }), refreshValues = () => ({ ok: false }), refreshValue = async () => ({ ok: false }), recycleCard = async () => ({ ok: false }), getWishlist = () => new Set(), setWishlisted = async () => ({ ok: false, error: 'still starting up' }), getReport = () => ({}), getIds = () => ({}), changeTargets = () => { throw new Error('not available'); }, readJournal = () => [], catalog = async () => ({ cards: [] }), restart = () => ({ ok: false, error: 'not available' }), scanNow = async () => ({ ok: false, error: 'still starting up' }) }) {
   const send = (res, code, body, type = 'application/json') => {
     res.writeHead(code, { 'content-type': type, 'cache-control': 'no-store' });
     res.end(typeof body === 'string' || Buffer.isBuffer(body) ? body : JSON.stringify(body));
@@ -50,7 +50,43 @@ export function startUI({ port, getState, control, log, session, onConnected, ge
       }
       if (req.method === 'GET' && url.pathname === '/api/cards-history') {
         const q = url.searchParams;
-        return send(res, 200, readCardEvents({ limit: Math.min(Number(q.get('limit')) || 300, 2000), type: q.get('type') || undefined, q: q.get('q') || undefined }));
+        const r = readCardEvents({ limit: Math.min(Number(q.get('limit')) || 300, 2000), type: q.get('type') || undefined, q: q.get('q') || undefined });
+        const wl = getWishlist();
+        return send(res, 200, { ...r, events: r.events.map((e) => ({ ...e, onWishlist: wl.has(e.cardId) })) });
+      }
+      if (req.method === 'POST' && url.pathname === '/api/wishlist') {
+        const { cardId, on, title } = JSON.parse((await readBody(req)) || '{}');
+        const r = await setWishlisted(cardId, on === true, typeof title === 'string' ? title : undefined);
+        return send(res, r.ok ? 200 : 400, r);
+      }
+      // Targets (targets.json): read the full report, change targets/themes with a list of ops.
+      if (req.method === 'GET' && url.pathname === '/api/report') return send(res, 200, getReport());
+      if (req.method === 'GET' && url.pathname === '/api/ids') return send(res, 200, getIds());
+      if (req.method === 'GET' && url.pathname === '/api/journal') return send(res, 200, { entries: readJournal(Math.min(Number(url.searchParams.get('limit')) || 50, 1000)) });
+      if (req.method === 'POST' && url.pathname === '/api/targets') {
+        const { ops, by } = JSON.parse((await readBody(req)) || '{}');
+        if (!Array.isArray(ops) || !ops.length) return send(res, 400, { error: 'send { ops: [...] }' });
+        try {
+          return send(res, 200, { ok: true, done: changeTargets(ops, ['agent', 'cli'].includes(by) ? by : 'you') });
+        } catch (e) {
+          return send(res, 400, { ok: false, error: e.message });
+        }
+      }
+      if (req.method === 'GET' && url.pathname === '/api/catalog') {
+        const q = url.searchParams;
+        try {
+          return send(res, 200, await catalog({ text: q.get('text') || undefined, category: q.get('category') || undefined, rarity: q.get('rarity') || undefined, minPageviews: q.get('minPageviews') || undefined, limit: q.get('limit') || 50 }));
+        } catch (e) {
+          return send(res, 400, { error: e.message });
+        }
+      }
+      if (req.method === 'POST' && url.pathname === '/api/scan') {
+        const r = await scanNow(JSON.parse((await readBody(req)) || '{}').what);
+        return send(res, r.ok ? 200 : 400, r);
+      }
+      if (req.method === 'POST' && url.pathname === '/api/restart') {
+        const r = restart(JSON.parse((await readBody(req)) || '{}').why);
+        return send(res, r.ok ? 200 : 400, r);
       }
       // The config comes with a version (file time) so a page opened long ago cannot overwrite newer settings.
       const version = () => fs.statSync(CONFIG_PATH).mtimeMs;

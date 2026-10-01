@@ -1,0 +1,8 @@
+{
+  "_about": "Hard limits on every bid, from bid rules and targets alike. Only you edit this file (the agent is not allowed to). Copy it to limits.json. null = no limit. The bot re-reads it within seconds.",
+  "maxBidPerCard": 300,
+  "maxDailySpend": 600,
+  "maxWeeklySpend": 2000,
+  "minReserve": 100,
+  "maxThemeBudget": 1500
+}

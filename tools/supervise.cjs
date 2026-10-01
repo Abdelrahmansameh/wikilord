@@ -8,7 +8,7 @@ let stopping = false;
 
 function start() {
   const out = fs.openSync(path.join(root, 'bot.log'), 'a');
-  const child = spawn(process.execPath, [path.join('src', 'bot.js'), ...args], { cwd: root, stdio: ['ignore', out, out] });
+  const child = spawn(process.execPath, [path.join('src', 'bot.js'), ...args], { cwd: root, stdio: ['ignore', out, out], env: { ...process.env, WM_SUPERVISED: '1' } });
   child.on('exit', (code) => {
     if (stopping) return;
     fs.appendFileSync(path.join(root, 'bot.log'), new Date().toISOString().slice(11, 23) + ' bot exited (code ' + code + '), restarting in 10s\n');

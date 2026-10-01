@@ -8,7 +8,8 @@
     "live": "node src/bot.js --live",
     "check": "node src/bot.js --once",
     "explain": "node src/explain.js",
-    "check-config": "node -e \"import('./src/config.js').then(m=>{const c=m.loadConfig();console.log('config OK:',c.rules.length,'bid rules,',c.recycle.rules.length,'recycle rules')}).catch(e=>{console.error(e.message);process.exit(1)})\""
+    "check-config": "node -e \"import('./src/config.js').then(m=>{const c=m.loadConfig();console.log('config OK:',c.rules.length,'bid rules,',c.recycle.rules.length,'recycle rules')}).catch(e=>{console.error(e.message);process.exit(1)})\"",
+    "agent": "node src/agent.js"
   },
   "engines": {
     "node": ">=20"

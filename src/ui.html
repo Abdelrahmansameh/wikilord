@@ -59,11 +59,17 @@
   textarea { width: 100%; font: 12px/1.4 ui-monospace, Consolas, monospace; padding: 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--text); }
   ol.steps { padding-left: 20px; margin: 0 0 14px; } ol.steps li { margin-bottom: 8px; }
   code.cmd { background: var(--chip); padding: 2px 8px; border-radius: 6px; font-family: ui-monospace, Consolas, monospace; }
+  .scanrow { display: flex; gap: 10px 24px; flex-wrap: wrap; margin-bottom: 14px; }
+  .scanitem { display: flex; gap: 8px; align-items: center; }
+  .scanitem span { font-size: 12px; margin: 0; }
   td.actions { white-space: nowrap; }
   td.actions > * { margin-right: 6px; }
   td.actions button { padding: 4px 10px; }
   #valuebox td { white-space: nowrap; vertical-align: middle; height: 38px; }
-  #valuebox td:first-child { max-width: 300px; overflow: hidden; text-overflow: ellipsis; }
+  #valuebox td.btn { padding-left: 0; padding-right: 6px; }
+  #valuebox td.btn:first-child { padding-left: 8px; }
+  #valuebox td.btn button { width: 100%; padding: 4px 10px; }
+  #valuebox td.name { max-width: 300px; overflow: hidden; text-overflow: ellipsis; }
   #valuebox td.why { max-width: 190px; overflow: hidden; text-overflow: ellipsis; }
   @media (max-width: 640px) { .row { grid-template-columns: 1fr; } }
 </style>
@@ -121,6 +127,12 @@ const SETTINGS = [
     ['global.counters', 'num', 'Counter-bids per auction if outbid', 'After our snipe, if someone outbids us the bot queues a new snipe, up to this many times. 0 = never. Each rule can override it.'],
     ['global.skipOwned', 'bool', 'Skip cards I already own'],
     ['dryRun', 'bool', 'Force dry-run (never bid, never open packs)', 'Restart needed.'],
+  ]],
+  ['Targets', [
+    ['targets.enabled', 'bool', 'Use the target list (Targets tab)', 'Off = the bot ignores targets; bid rules keep working.'],
+    ['targets.increment', 'num', 'Bid this much above the current price on targets'],
+    ['targets.reserveHorizonHours', 'num', 'Save money for higher-priority targets ending within (hours)', 'When money is short, a bid is skipped if it would leave too little for a higher-priority target whose auction ends within this many hours.'],
+    ['targets.searchEveryScan', 'num', 'High-priority targets searched on every scan', 'Other targets and the wishlist take turns in the search time per scan.'],
   ]],
   ['Packs', [
     ['packs.enabled', 'bool', 'Open packs automatically'],
@@ -190,6 +202,27 @@ function selling(s) {
       : h('p', { class: 'empty' }, s.enabled ? 'Nothing to list right now (no free slots, or no card matches a sell rule).' : 'Turn selling on and choose your rules on the Sell rules tab.'));
 }
 
+/* Manual scans. The dashboard redraws every 2 s, so "busy" comes from the bot's state and results are kept here. */
+const scanMsg = {};
+async function runScan(what) {
+  scanMsg[what] = { text: 'Started from the dashboard', busy: true };
+  drawView();
+  const r = await api('/api/scan', { method: 'POST', body: JSON.stringify({ what }) }).catch(() => ({ ok: false, data: { error: 'the bot is not reachable' } }));
+  scanMsg[what] = r.ok ? { text: 'Done: ' + r.data.done, cls: 'good' } : { text: r.data.error ?? 'failed', cls: 'err' };
+  setTimeout(() => { delete scanMsg[what]; }, 15000);
+  poll();
+}
+function scanControls(sc) {
+  if (!sc) return null;
+  const ago = (t) => { if (!t) return 'not yet'; const s = Math.round((Date.now() - t) / 1000); return s < 90 ? s + ' s ago' : Math.round(s / 60) + ' min ago'; };
+  const item = (what, label, busy, busyLabel, last) => h('div', { class: 'scanitem' },
+    h('button', { disabled: busy || scanMsg[what]?.busy, onclick: () => runScan(what) }, busy || scanMsg[what]?.busy ? busyLabel : label),
+    h('span', { class: scanMsg[what]?.cls ?? 'hint' }, scanMsg[what]?.text ?? last));
+  return h('div', { class: 'scanrow' },
+    item('auctions', '↻ Scan auctions now', sc.running, 'Scanning…', `Last scan ${ago(sc.lastAt)}${sc.summary ? ' · ' + sc.summary : ''} · automatic every ${sc.everySec} s`),
+    item('wishlist', '↻ Reload wishlist', sc.wishlistLoading, 'Reloading…', `Last reload ${ago(sc.wishlistAt)} · automatic every 30 s`));
+}
+
 function renderDashboard() {
   const s = state; if (!s) return h('p', { class: 'empty' }, 'Connecting…');
   const bidRows = s.recentBids.map((b) => h('tr', {},
@@ -208,6 +241,7 @@ function renderDashboard() {
       stat('Packs opened', s.stats.packs), stat('Cards recycled', s.stats.recycled),
       stat('Wishlist cards', s.wishlistSize), stat('Session valid for', `${s.sessionMinLeft} min`),
       stat('Clock / latency', `${s.clock.offsetMs} ms`, `rtt ${s.clock.rttMs} ms`), stat('Uptime', fmtSec(s.uptimeSec))),
+    scanControls(s.scan),
     money(s.money),
     selling(s.sell),
     h('section', {}, h('h2', {}, 'Upcoming snipes'),
@@ -332,6 +366,7 @@ const CARD_EVENTS = {
   recycled: ['Recycled', ''],
   listed: ['Listed for sale', ''],
   sold: ['Sold', 'good'],
+  lost: ['Outbid (lost)', ''],
 };
 const cardsFilter = { type: '', q: '' };
 
@@ -363,9 +398,9 @@ async function loadCards() {
     const rows = events.map((e) => {
       const [label, cls] = CARD_EVENTS[e.type] ?? [e.type, ''];
       const amount = e.type === 'recycled' ? (e.gained ? '+' + e.gained : '') : e.type === 'won' ? '−' + (e.price ?? '') : e.type === 'sold' ? '+' + (e.price ?? '') : e.type === 'listed' ? (e.price ?? '') : '';
-      const note = [e.wishlist ? 'on wishlist' : '', e.rule ? 'rule: ' + e.rule : '', e.average != null ? 'avg ' + e.average : ''].filter(Boolean).join(' · ');
+      const note = [e.type === 'lost' ? `went for ${e.price ?? '?'}, my bid ${e.myBid ?? '?'}` : '', e.wishlist ? 'on wishlist' : '', e.rule ? 'rule: ' + e.rule : '', e.average != null ? 'avg ' + e.average : ''].filter(Boolean).join(' · ');
       return h('tr', {}, h('td', {}, new Date(e.at).toLocaleString()), h('td', {}, h('span', { class: cls === 'good' ? 'good' : '' }, label)),
-        h('td', {}, e.title ?? e.cardId ?? ''), h('td', {}, h('span', { class: 'chip' }, e.rarity ?? '')), h('td', {}, amount), h('td', { class: 'hint' }, note));
+        h('td', { class: 'actions' }, wishlistButton(e.cardId, e.title, e.onWishlist, loadCards), e.title ?? e.cardId ?? ''), h('td', {}, h('span', { class: 'chip' }, e.rarity ?? '')), h('td', {}, amount), h('td', { class: 'hint' }, note));
     });
     $('#cardtable').replaceChildren(rows.length
       ? h('table', {}, h('thead', {}, h('tr', {}, ['When', 'Event', 'Card', 'Rarity', 'Coins', 'Note'].map((x) => h('th', {}, x)))), h('tbody', {}, rows),
@@ -374,6 +409,19 @@ async function loadCards() {
   } finally {
     window.__cardsBusy = false;
   }
+}
+
+/** ♥ / ♡: add or remove the card on your WikiMasters wishlist, then redraw the tab (`after`). */
+function wishlistButton(cardId, title, on, after) {
+  if (!cardId) return '';
+  const btn = h('button', { class: on ? 'good' : '', title: on ? 'On your wishlist – click to remove' : 'Add to your wishlist', onclick: async () => {
+    btn.disabled = true;
+    const r = await api('/api/wishlist', { method: 'POST', body: JSON.stringify({ cardId, title, on: !on }) });
+    btn.disabled = false;
+    if (r.ok) after();
+    else { btn.textContent = '⚠'; btn.title = r.data.error ?? 'failed'; }
+  } }, on ? '♥' : '♡');
+  return btn;
 }
 
 /* ---------- value: rough market value of owned cards ---------- */
@@ -458,13 +506,13 @@ async function loadValues() {
     const ago = (t) => { if (!t) return 'not yet'; const m = Math.round((Date.now() - t) / 60000); return m < 60 ? m + ' min ago' : Math.round(m / 60) + ' h ago'; };
     const tile = (label, n, sub) => h('div', { class: 'stat' }, h('b', {}, n), h('span', {}, label + (sub ? ' · ' + sub : '')));
     const rows = d.cards.map((c) => h('tr', {},
-      h('td', { title: c.title }, c.title + (c.shiny ? ' ★' : '') + (c.count > 1 ? ' ×' + c.count : '')),
+      ...[sellButton(c), refreshButton(c), wishlistButton(c.cardId, c.title, c.onWishlist, loadValues), recycleButton(c)].map((b) => h('td', { class: 'btn' }, b)),
+      h('td', { class: 'name', title: c.title }, c.title + (c.shiny ? ' ★' : '') + (c.count > 1 ? ' ×' + c.count : '')),
       h('td', {}, h('span', { class: 'chip' }, c.rarity ?? '')),
       h('td', {}, c.average != null ? h('b', {}, String(c.average)) : h('span', { class: 'hint' }, c.checkedAt ? 'no sales yet' : 'checking…')),
       h('td', {}, c.average != null ? String(Math.round(c.average * 0.75)) : ''),
       h('td', { class: 'hint why', title: c.protectedBy ?? '' }, c.protectedBy ?? ''),
-      h('td', { class: 'hint' }, c.checkedAt ? ago(c.checkedAt) : c.average != null ? 'queued for refresh' : 'not yet'),
-      h('td', { class: 'actions' }, sellButton(c), refreshButton(c), recycleButton(c))));
+      h('td', { class: 'hint' }, c.checkedAt ? ago(c.checkedAt) : c.average != null ? 'queued for refresh' : 'not yet')));
     $('#valuebox').replaceChildren(
       h('p', { class: 'hint' }, 'A rough idea of what your cards are worth: the average price each card has sold for on the marketplace, at its rarity. The bot checks one card every few seconds at first, then refreshes slowly (each value can be up to about 12 hours old).'),
       h('div', { class: 'grid' },
@@ -474,7 +522,7 @@ async function loadValues() {
         tile('Still checking', d.pending)),
       h('div', { style: 'margin-bottom:12px' }, h('button', { onclick: async (e) => { e.currentTarget.disabled = true; e.currentTarget.textContent = 'Refreshing at the normal pace (about 25 s per card)'; await api('/api/values/refresh', { method: 'POST', body: '{}' }); setTimeout(loadValues, 2000); } }, 'Refresh all prices')),
       rows.length
-        ? h('div', { style: 'overflow-x:auto' }, h('table', {}, h('thead', {}, h('tr', {}, ['Card', 'Rarity', 'Average sale price', '75% (sell price)', 'Protected', 'Checked', ''].map((x) => h('th', {}, x)))), h('tbody', {}, rows)))
+        ? h('div', { style: 'overflow-x:auto' }, h('table', {}, h('thead', {}, h('tr', {}, h('th', { colspan: 4 }), ['Card', 'Rarity', 'Average sale price', '75% (sell price)', 'Protected', 'Checked'].map((x) => h('th', {}, x)))), h('tbody', {}, rows)))
         : h('p', { class: 'empty' }, 'Reading your collection… values appear here within a minute or two.'));
   } finally {
     window.__valuesBusy = false;
@@ -516,8 +564,128 @@ function renderConnect() {
       h('p', { class: 'hint' }, 'The cookie is like a password for your account. It is stored only on this computer (in the .env file) and is only ever sent to wiki-masters.com.')));
 }
 
+/* ---------- targets: specific cards with a priority and max bid, grouped in themes with weekly budgets ---------- */
+const tg = { theme: '', results: null, searching: false, addTheme: '', addPriority: 2, addMax: 30, showAll: false };
+const PRIO = { 1: 'High', 2: 'Normal', 3: 'Low' };
+
+async function targetOp(ops) {
+  const r = await api('/api/targets', { method: 'POST', body: JSON.stringify({ ops }) });
+  if (!r.ok) alert(r.data.error ?? 'failed');
+  loadTargets();
+  return r.ok;
+}
+
+function renderTargets() {
+  return h('div', { id: 'tgbox' }, h('p', { class: 'empty' }, 'Loading…'));
+}
+
+async function loadTargets() {
+  const [r, j] = await Promise.all([api('/api/report'), api('/api/journal?limit=40')]);
+  if (!r.ok || tab !== 'targets' || !$('#tgbox')) return;
+  const rep = r.data;
+  window.__tgAt = Date.now();
+  const themeNames = rep.themes.map((t) => t.name);
+  if (!tg.addTheme && themeNames.length) tg.addTheme = themeNames[0];
+  const lim = rep.limits ?? {};
+  const fmtLeft = (iso) => fmtSec(Math.round((Date.parse(iso) - Date.now()) / 1000));
+
+  // themes and budgets
+  const themeRows = rep.themes.map((t) => {
+    const budget = h('input', { type: 'number', value: t.weeklyBudget ?? '', placeholder: 'no budget', style: 'width:110px', onchange: (e) => targetOp([{ op: 'theme', name: t.name, weeklyBudget: e.target.value === '' ? null : Number(e.target.value) }]) });
+    const on = h('input', { type: 'checkbox', checked: t.enabled !== false, onchange: (e) => targetOp([{ op: 'theme', name: t.name, enabled: e.target.checked }]) });
+    return h('tr', {}, h('td', {}, h('b', {}, t.name), t.note ? h('div', { class: 'hint', style: 'margin:0' }, t.note) : ''), h('td', {}, budget), h('td', {}, String(t.spent7d)), h('td', {}, String(t.held)),
+      h('td', {}, t.left == null ? '–' : String(t.left)), h('td', {}, `${t.targets} (${t.owned} owned)`), h('td', {}, h('label', {}, on, ' on')),
+      h('td', { class: 'actions' }, h('button', { class: 'danger', title: 'Remove this theme (only when it has no targets)', onclick: () => confirm(`Remove theme ${t.name}?`) && targetOp([{ op: 'removeTheme', name: t.name }]) }, '✕')));
+  });
+  const newTheme = h('input', { type: 'text', placeholder: 'new theme, e.g. jeux-video', style: 'max-width:220px' });
+  const newBudget = h('input', { type: 'number', placeholder: 'weekly budget', style: 'max-width:140px' });
+
+  // targets
+  let list = rep.targets;
+  if (tg.theme) list = list.filter((t) => (t.theme ?? '') === tg.theme);
+  if (!tg.showAll) list = list.filter((t) => t.status === 'active' && !t.owned);
+  list.sort((a, b) => (a.auction ? 0 : 1) - (b.auction ? 0 : 1) || a.priority - b.priority || b.maxBid - a.maxBid);
+  const tRows = list.map((t) => {
+    const prio = h('select', { onchange: (e) => targetOp([{ op: 'update', cardId: t.cardId, priority: Number(e.target.value) }]) }, ...[1, 2, 3].map((p) => h('option', { value: p, selected: t.priority === p }, PRIO[p])));
+    prio.value = String(t.priority);
+    const max = h('input', { type: 'number', value: t.maxBid, style: 'width:80px', onchange: (e) => targetOp([{ op: 'update', cardId: t.cardId, maxBid: Number(e.target.value) }]) });
+    const status = t.owned ? h('span', { class: 'good' }, 'owned ✓')
+      : t.auction ? h('span', {}, (t.auction.leading ? '🟢 leading at ' : 'on sale: ') + t.auction.price + ' · ends in ' + fmtLeft(t.auction.endsAt) + (t.auction.planned ? ' · snipe planned' : ''))
+      : t.status !== 'active' ? h('span', { class: 'hint' }, t.status) : h('span', { class: 'hint' }, 'waiting for an auction');
+    return h('tr', {}, h('td', {}, prio), h('td', {}, t.title, ' ', h('span', { class: 'chip' }, t.rarity ?? '?')), h('td', {}, t.theme ?? '–'), h('td', {}, max,
+      t.effectiveMaxBid != null && t.effectiveMaxBid < t.maxBid ? h('div', { class: 'hint', style: 'margin:0' }, 'capped at ' + t.effectiveMaxBid) : ''),
+      h('td', {}, status), h('td', { class: 'hint', style: 'max-width:260px' }, t.reason ?? ''), h('td', { class: 'hint' }, t.addedBy ?? ''),
+      h('td', { class: 'actions' }, h('button', { class: 'danger', title: 'Remove from targets', onclick: () => targetOp([{ op: 'remove', cardId: t.cardId }]) }, '✕')));
+  });
+
+  // add cards by searching the game's catalog
+  const q = h('input', { type: 'text', placeholder: 'Search the game for cards (title or description)…', style: 'max-width:340px' });
+  const rar = h('input', { type: 'text', placeholder: 'rarities, e.g. SR,UR,L', style: 'max-width:160px' });
+  const doSearch = async () => {
+    if (!q.value.trim()) return;
+    tg.searching = true; loadTargetsResults();
+    const r = await api('/api/catalog?' + new URLSearchParams({ text: q.value.trim(), rarity: rar.value.trim(), limit: '40' }));
+    tg.searching = false;
+    tg.results = r.ok ? r.data.cards : { error: r.data.error };
+    loadTargetsResults();
+  };
+  q.addEventListener('keydown', (e) => e.key === 'Enter' && doSearch());
+  const addTheme = h('select', { onchange: (e) => (tg.addTheme = e.target.value) }, h('option', { value: '' }, '(no theme)'), ...themeNames.map((n) => h('option', { value: n, selected: tg.addTheme === n }, n)));
+  addTheme.value = tg.addTheme;
+  const addPrio = h('select', { onchange: (e) => (tg.addPriority = Number(e.target.value)) }, ...[1, 2, 3].map((p) => h('option', { value: p, selected: tg.addPriority === p }, PRIO[p])));
+  addPrio.value = String(tg.addPriority);
+  const addMax = h('input', { type: 'number', value: tg.addMax, style: 'width:90px', oninput: (e) => (tg.addMax = Number(e.target.value)) });
+
+  const L = (k, label) => (lim[k] != null ? h('div', { class: 'stat' }, h('b', {}, lim[k]), h('span', {}, label)) : null);
+  const limitTiles = [L('maxBidPerCard', 'Max bid per card'), L('maxDailySpend', 'Max spend per day'), L('maxWeeklySpend', 'Max spend per 7 days'), L('minReserve', 'Balance always kept'), L('maxThemeBudget', 'Max theme budget')].filter(Boolean);
+  const journalRows = (j.ok ? j.data.entries : []).map((e) => h('tr', {}, h('td', { class: 'hint', style: 'white-space:nowrap' }, new Date(e.at).toLocaleString()), h('td', {}, h('span', { class: 'chip' }, e.by ?? '')), h('td', {}, e.text ?? '', e.reason ? h('div', { class: 'hint', style: 'margin:0' }, 'why: ' + e.reason) : '')));
+
+  $('#tgbox').replaceChildren(
+    h('p', { class: 'hint' }, 'Targets are specific cards you want, each with its own max bid and a priority. They come before the bid rules. Themes group targets and can have a weekly budget (wins in the last 7 days + bids still running). When money is short, the bot keeps enough for higher-priority targets whose auctions end within the next few hours. Cards on this list are never sold or recycled automatically. Changes apply within seconds; the agent (npm run agent) edits the same list.'),
+    h('div', { class: 'grid' },
+      stat('Balance', rep.balance, 'keeps ' + rep.reserve),
+      stat('Spent, last 7 days', rep.spend.last7days, rep.spend.heldInBids ? rep.spend.heldInBids + ' held in bids' : ''),
+      stat('Won / lost, 7 days', rep.last7days.won + ' / ' + rep.last7days.lost),
+      stat('Active targets', rep.targets.filter((t) => t.status === 'active' && !t.owned).length, rep.targets.filter((t) => t.auction).length + ' on sale now')),
+    rep.targetsEnabled ? '' : h('div', { class: 'banner' }, h('span', {}, 'Targets are switched off (targets.enabled = false in config.json): the bot ignores this list.')),
+    h('section', {}, h('h2', {}, 'Themes and weekly budgets'),
+      themeRows.length ? h('table', {}, h('thead', {}, h('tr', {}, ['Theme', 'Weekly budget', 'Spent (7 d)', 'Held', 'Left', 'Targets', '', ''].map((x) => h('th', {}, x)))), h('tbody', {}, themeRows)) : h('p', { class: 'empty' }, 'No themes yet.'),
+      h('div', { class: 'actionrow' }, newTheme, newBudget, h('button', { onclick: () => newTheme.value.trim() && targetOp([{ op: 'theme', name: newTheme.value.trim().toLowerCase(), weeklyBudget: newBudget.value === '' ? null : Number(newBudget.value) }]) }, 'Add theme'))),
+    h('section', {}, h('h2', {}, 'Add cards'),
+      h('div', { class: 'actionrow', style: 'margin-top:0' }, q, rar, h('button', { class: 'primary', onclick: doSearch }, 'Search')),
+      h('div', { class: 'actionrow' }, h('label', { class: 'f' }, 'Theme', addTheme), h('label', { class: 'f' }, 'Priority', addPrio), h('label', { class: 'f' }, 'Max bid', addMax)),
+      h('div', { id: 'tgresults', style: 'margin-top:10px' })),
+    h('section', {}, h('h2', {}, 'Targets'),
+      h('div', { class: 'actionrow', style: 'margin:0 0 10px' },
+        h('select', { onchange: (e) => { tg.theme = e.target.value; loadTargets(); } }, h('option', { value: '' }, 'All themes'), ...themeNames.map((n) => h('option', { value: n, selected: tg.theme === n }, n))),
+        h('label', {}, h('input', { type: 'checkbox', checked: tg.showAll, onchange: (e) => { tg.showAll = e.target.checked; loadTargets(); } }), ' also show owned, expired and switched-off')),
+      tRows.length ? h('div', { style: 'overflow-x:auto' }, h('table', {}, h('thead', {}, h('tr', {}, ['Priority', 'Card', 'Theme', 'Max bid', 'Status', 'Why', 'Added by', ''].map((x) => h('th', {}, x)))), h('tbody', {}, tRows)))
+        : h('p', { class: 'empty' }, rep.targets.length ? 'Nothing to show with these filters.' : 'No targets yet. Search for cards above, or let the agent find them.')),
+    h('section', {}, h('h2', {}, 'Hard limits (limits.json)'),
+      limitTiles.length ? h('div', { class: 'grid', style: 'margin-bottom:6px' }, ...limitTiles) : h('p', { class: 'empty' }, 'None set.'),
+      h('p', { class: 'hint' }, 'These apply to every bid, from rules and targets alike, and the agent is not allowed to change them. Edit limits.json by hand (copy limits.example.json); the bot picks it up within seconds.')),
+    h('section', {}, h('h2', {}, 'Journal (who changed what, and why)'),
+      journalRows.length ? h('table', {}, h('tbody', {}, journalRows)) : h('p', { class: 'empty' }, 'Nothing yet.')));
+  loadTargetsResults();
+}
+
+function loadTargetsResults() {
+  const box = $('#tgresults');
+  if (!box) return;
+  if (tg.searching) return box.replaceChildren(h('p', { class: 'empty' }, 'Searching… (the catalog is big, this can take a few seconds)'));
+  if (!tg.results) return box.replaceChildren();
+  if (tg.results.error) return box.replaceChildren(h('p', { class: 'err' }, tg.results.error));
+  const rows = tg.results.map((c) => h('tr', {}, h('td', {}, c.title), h('td', {}, h('span', { class: 'chip' }, c.rarity)), h('td', {}, String(c.pageviews)), h('td', { class: 'hint' }, c.category),
+    h('td', { class: 'actions' }, h('button', { onclick: async (e) => {
+      e.currentTarget.disabled = true;
+      const ok = await targetOp([{ op: 'add', cardId: c.cardId, title: c.title, rarity: c.rarity, theme: tg.addTheme || null, priority: tg.addPriority, maxBid: tg.addMax }]);
+      if (ok) e.target.replaceWith(h('span', { class: 'good' }, 'added'));
+    } }, '+ Target'))));
+  box.replaceChildren(rows.length ? h('table', {}, h('thead', {}, h('tr', {}, ['Card', 'Rarity', 'Pageviews', 'Description', ''].map((x) => h('th', {}, x)))), h('tbody', {}, rows)) : h('p', { class: 'empty' }, 'No cards found.'));
+}
+
 /* ---------- shell ---------- */
-const TABS = [['dashboard', 'Dashboard'], ['cards', 'Cards'], ['value', 'Value'], ['bid', 'Bid rules'], ['recycle', 'Recycle rules'], ['sell', 'Sell rules'], ['settings', 'Settings'], ['connect', 'Connect']];
+const TABS = [['dashboard', 'Dashboard'], ['targets', 'Targets'], ['cards', 'Cards'], ['value', 'Value'], ['bid', 'Bid rules'], ['recycle', 'Recycle rules'], ['sell', 'Sell rules'], ['settings', 'Settings'], ['connect', 'Connect']];
 function drawTabs() {
   $('#tabs').replaceChildren(...TABS.map(([id, label]) => h('button', { class: tab === id ? 'on' : '', onclick: () => { tab = id; draw(); } }, label)));
 }
@@ -527,6 +695,7 @@ function drawView() {
   if (tab === 'dashboard') { v.replaceChildren(renderDashboard()); const l = $('#log'); if (l) l.scrollTop = l.scrollHeight; }
   else if (tab === 'connect') v.replaceChildren(renderConnect());
   else if (tab === 'cards') { v.replaceChildren(renderCards()); loadCards(); }
+  else if (tab === 'targets') { v.replaceChildren(renderTargets()); loadTargets(); }
   else if (tab === 'value') { v.replaceChildren(h('div', { id: 'valuebox' }, h('p', { class: 'empty' }, 'Loading…'))); loadValues(); }
   else if (!cfg) v.replaceChildren(h('p', { class: 'empty' }, 'Loading settings…'));
   else v.replaceChildren(tab === 'bid' ? renderRules('bid') : tab === 'recycle' ? renderRules('recycle') : tab === 'sell' ? renderRules('sell') : renderSettings());
@@ -542,6 +711,8 @@ async function poll() {
     m.className = 'badge ' + (state.paused ? 'paused' : state.mode === 'live' ? 'live' : 'dry');
     $('#pause').textContent = state.paused ? 'Resume' : 'Pause';
     if (tab === 'cards' && !window.__cardsBusy) loadCards();
+    // refresh the Targets tab every 20 s, but not while you are typing in it
+    if (tab === 'targets' && Date.now() - (window.__tgAt || 0) > 20000 && !$('#tgbox')?.contains(document.activeElement)) loadTargets();
     if (tab === 'value' && !window.__valuesBusy && Date.now() - (window.__valuesAt || 0) > 15000) loadValues();
     if (tab === 'dashboard') { const l = $('#log'); const stick = !l || l.scrollTop + l.clientHeight >= l.scrollHeight - 30; drawView(); if (stick) { const n = $('#log'); if (n) n.scrollTop = n.scrollHeight; } }
   } else { $('#mode').textContent = 'offline'; $('#mode').className = 'badge paused'; }

@@ -62,21 +62,34 @@ export function matches(when = {}, f, wishlist = new Set()) {
  */
 export const minNextBid = (current) => Math.max(Math.ceil((current * 11) / 10), current + 1);
 
-/** Returns { action: 'bid', rule, amount } or { action: 'skip', reason }. First matching rule wins. */
-export function decide(cfg, a, myUserId, wishlist = new Set()) {
+const nextAmount = (a, inc) => (a.current_bid == null ? a.base_amount : Math.max(a.current_bid + inc, minNextBid(a.current_bid)));
+
+/**
+ * Returns { action: 'bid', rule, amount, max, counters, target?, priority?, theme? } or { action: 'skip', reason }.
+ * A card on the target list (`targets`: card id -> target) is decided by its target: its own max bid, priority and
+ * theme. Everything else goes through the bid rules, first matching rule wins.
+ */
+export function decide(cfg, a, myUserId, wishlist = new Set(), targets = new Map()) {
   if (a.status !== 'active') return { action: 'skip', reason: 'not active' };
   if (a.seller_id === myUserId) return { action: 'skip', reason: 'own listing' };
   if (a.current_bidder_id === myUserId) return { action: 'skip', reason: 'already leading' };
   if (cfg.global.skipOwned && a.owned) return { action: 'skip', reason: 'already owned' };
 
+  const t = targets.get(a.card_id);
+  if (t) {
+    const name = `target${t.theme ? ':' + t.theme : ''}`;
+    const amount = nextAmount(a, cfg.targets?.increment ?? 1);
+    if (amount > t.maxBid) return { action: 'skip', reason: `${name}: ${amount} > max ${t.maxBid}` };
+    return { action: 'bid', rule: name, amount, max: t.maxBid, counters: t.counters ?? cfg.targets?.counters, target: true, priority: t.priority, theme: t.theme ?? null };
+  }
+
   const f = auctionFacts(a);
   for (const rule of cfg.rules) {
     if (rule.enabled === false || !matches(rule.when, f, wishlist)) continue;
     if (rule.skip) return { action: 'skip', reason: `rule ${rule.name}` };
-    const inc = rule.bid?.increment ?? 1;
-    const amount = a.current_bid == null ? a.base_amount : Math.max(a.current_bid + inc, minNextBid(a.current_bid));
+    const amount = nextAmount(a, rule.bid?.increment ?? 1);
     if (amount > (rule.bid?.max ?? 0)) return { action: 'skip', reason: `rule ${rule.name}: ${amount} > max ${rule.bid?.max}` };
-    return { action: 'bid', rule: rule.name, amount };
+    return { action: 'bid', rule: rule.name, amount, max: rule.bid?.max ?? 0, counters: rule.bid?.counters };
   }
   return { action: 'skip', reason: 'no rule matched' };
 }

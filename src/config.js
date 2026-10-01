@@ -9,7 +9,7 @@ const WHEN_KEYS = new Set([
   'titleRegex', 'categoryRegex', 'titleContains',
 ]);
 const RARITIES = new Set(['C', 'PC', 'R', 'SR', 'UR', 'L']);
-const TOP_KEYS = new Set(['dryRun', 'myUserId', 'timing', 'global', 'rules', 'packs', 'recycle', 'sell', 'ui']);
+const TOP_KEYS = new Set(['dryRun', 'myUserId', 'timing', 'global', 'rules', 'targets', 'packs', 'recycle', 'sell', 'ui']);
 const DURATIONS = [10, 30, 60, 180, 360, 720];
 
 function checkWhen(when, where, errors) {
@@ -84,6 +84,17 @@ export function validate(cfg) {
       if (!['keep', 'recycle'].includes(x?.action)) e.push(`${w}: "action" must be "keep" or "recycle"`);
       checkWhen(x?.when, w, e);
     });
+
+  // Optional: how the bot treats the target list (targets.json). Leave it out for the defaults.
+  const tg = cfg.targets;
+  if (tg !== undefined) {
+    if (typeof tg !== 'object' || !tg || Array.isArray(tg)) e.push('targets must be an object');
+    else {
+      if (tg.enabled !== undefined && typeof tg.enabled !== 'boolean') e.push('targets.enabled must be true or false');
+      for (const kk of ['increment', 'counters', 'reserveHorizonHours', 'searchEveryScan'])
+        if (tg[kk] !== undefined && (typeof tg[kk] !== 'number' || tg[kk] < 0)) e.push(`targets.${kk} must be a number`);
+    }
+  }
 
   const s = cfg.sell;
   if (s !== undefined) {

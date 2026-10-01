@@ -1,6 +1,8 @@
 # secrets / session
 .env
 .session.json
+.env.secondary
+.session.secondary.json
 
 # captures and logs
 *.har
@@ -18,3 +20,20 @@ config.pretest.json
 
 node_modules
 .claude
+
+# targets, hard limits, the agent's journal and your strategy (personal)
+targets.json
+targets.json.tmp
+limits.json
+journal.jsonl
+strategy.md
+
+# scratch files (e.g. target lists for "agent target import")
+tmp/
+
+# market analyzer: database, personal config (its .env/.session.json are covered above)
+market-analyzer/*.db
+market-analyzer/*.db-wal
+market-analyzer/*.db-shm
+market-analyzer/config.json
+market-analyzer/*.log

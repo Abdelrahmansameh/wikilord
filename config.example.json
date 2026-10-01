@@ -75,6 +75,12 @@
       }
     }
   ],
+  "targets": {
+    "enabled": true,
+    "increment": 1,
+    "reserveHorizonHours": 3,
+    "searchEveryScan": 8
+  },
   "packs": {
     "enabled": true,
     "checkSeconds": 60,

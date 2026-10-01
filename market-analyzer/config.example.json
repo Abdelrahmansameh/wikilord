@@ -1,0 +1,16 @@
+{
+  "port": 8788,
+  "pollMs": 3000,
+  "coverSec": 20,
+  "maxPagesPerCycle": 25,
+  "recentPollMs": 3000,
+  "maxRecentPagesPerCycle": 25,
+  "recentInitialLookbackSec": 120,
+  "recentOverlapSec": 5,
+  "pendingHorizonSec": 120,
+  "maxRps": 15,
+  "maxInflight": 40,
+  "settleDelayMs": 2500,
+  "keepRaw": false,
+  "dbFile": "market.db"
+}

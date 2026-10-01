@@ -48,6 +48,21 @@ Safety limits (`global`): `dailySpendCap`, `maxSnipesPerHour`, `reserveBalance` 
 
 Timing (`timing`): `targetRemainingMs` is when the bid should land before the end (11000 = 11 s, must stay > 10000 or the auction extends). `extraBidLatencyMs` shifts the bid earlier if it lands too late (the log says so when an auction gets extended).
 
+## Targets (Targets tab, `targets.json`)
+
+Specific cards you want, each with its **own max bid** and a **priority** (1 high, 2 normal, 3 low), grouped in **themes**. Add them from the dashboard's **Targets** tab (search the game's cards, then "+ Target") or with `npm run agent`. No targets = the bot works exactly as before.
+
+- **Targets come before the bid rules.** A target's max bid applies even if a rule would pay more (or would skip the card).
+- The bot **searches the marketplace for every target**: priority-1 targets on every scan (`targets.searchEveryScan`, default 8), the others in turn with the wishlist.
+- **Theme budgets:** a theme's `weeklyBudget` caps what it spends over the last 7 days (auctions won + bids still running). Bids that would go over it are skipped.
+- **Priority reserve:** when money is short, a bid is skipped if it would leave too little for a **higher-priority target whose auction ends within `targets.reserveHorizonHours`** (default 3). Only targets you can afford right now are saved for (a card far above your spendable balance does not block everything else). Bid-rule bids count as lower priority than every target.
+- Targets are **never sold or recycled** automatically.
+- `"targets": { "enabled": false }` in config.json makes the bot ignore the list.
+
+## Hard limits (`limits.json`)
+
+Optional ceilings on **every** bid, from rules and targets alike: `maxBidPerCard`, `maxDailySpend`, `maxWeeklySpend` (won + held over 7 days), `minReserve` (balance always kept; the higher of this and `global.reserveBalance` applies) and `maxThemeBudget`. Copy `limits.example.json` to `limits.json`. Edit it by hand: the agent is not allowed to change it, and target or theme changes above it are refused.
+
 ## Selling policy (`sell`)
 
 Sells cards by rules, like recycling but with action `sell` or `keep`. **Off by default**: turn on `sell.enabled` (Sell rules tab) when the rules suit you.

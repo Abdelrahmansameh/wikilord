@@ -3,14 +3,17 @@ import { Session } from './http.js';
 import { loadConfig } from './config.js';
 import { auctionFacts, bidRuleMatch, decide, decideRecycle, matches, ownedFacts } from './rules.js';
 import { bidOnTitles, wonCardIds } from './history.js';
+import { activeTargets, readLimits, readTargets } from './targets.js';
 
 const cfg = loadConfig();
 const session = new Session();
+const targetData = readTargets();
+const targets = cfg.targets?.enabled === false ? new Map() : activeTargets(targetData, readLimits());
 const tally = (arr) => arr.reduce((m, k) => ((m[k] = (m[k] ?? 0) + 1), m), {});
 
 const w = await session.request('GET', '/api/cards?page=0&sort=rarity&wishlist=1');
 const wishlist = new Set(w.json.wishlistCardIds ?? []);
-console.log(`wishlist: ${wishlist.size} cards\n`);
+console.log(`wishlist: ${wishlist.size} cards, targets: ${targets.size} active\n`);
 
 // --- auctions: next ~300 to end + everything on the wishlist search is covered by the bot itself
 const auctions = [];
@@ -19,7 +22,7 @@ for (let p = 1; p <= 6; p++) {
   if (!r.json?.auctions?.length) break;
   auctions.push(...r.json.auctions);
 }
-const bids = auctions.map((a) => ({ a, d: decide(cfg, a, cfg.myUserId, wishlist) }));
+const bids = auctions.map((a) => ({ a, d: decide(cfg, a, cfg.myUserId, wishlist, targets) }));
 console.log(`AUCTIONS (next ${auctions.length} ending): ${bids.filter((x) => x.d.action === 'bid').length} would be bid on`);
 console.log('  by rule :', tally(bids.filter((x) => x.d.action === 'bid').map((x) => x.d.rule)));
 console.log('  skipped :', tally(bids.filter((x) => x.d.action === 'skip').map((x) => x.d.reason.replace(/: \d+ > max.*/, ': over max'))));
@@ -42,6 +45,7 @@ const dec = owned.map((e) => {
   // same protection as the bot: cards it won, and cards matching a bid rule, are never recycled
   if (won.has(e.card_id)) return { e, action: 'keep', rule: 'protected: won by a bid rule' };
   if (bidTitles.has(e.card.wikipedia_title)) return { e, action: 'keep', rule: 'protected: the bot bid on it' };
+  if (targetData.targets.some((t) => t.cardId === e.card_id)) return { e, action: 'keep', rule: 'protected: on the target list' };
   const br = bidRuleMatch(cfg, facts, wishlist);
   if (br) return { e, action: 'keep', rule: `protected: matches bid rule ${br}` };
   return { e, ...decideRecycle(cfg.recycle, facts, wishlist) };

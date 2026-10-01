@@ -36,6 +36,13 @@ export function wonCardIds() {
   return new Set(readAll().filter((e) => e.type === 'won' && e.cardId).map((e) => e.cardId));
 }
 
+/** Auctions won since `sinceMs` (for the weekly limits and theme budgets): [{ at, price, theme, cardId, title }]. */
+export function winsSince(sinceMs) {
+  return readAll()
+    .filter((e) => e.type === 'won' && Date.parse(e.at) >= sinceMs)
+    .map((e) => ({ at: Date.parse(e.at), price: e.price ?? 0, theme: e.theme ?? null, cardId: e.cardId, title: e.title }));
+}
+
 /**
  * Titles of every card the bot has successfully bid on (bids.jsonl goes back to before the card history
  * existed). Used as extra protection so early wins are never sold or recycled either.
@@ -53,9 +60,10 @@ export function bidOnTitles() {
   }
 }
 
-/** Newest first, optionally filtered by type and a text search on the title. */
-export function readCardEvents({ limit = 500, type, q } = {}) {
+/** Newest first, optionally filtered by type, a text search on the title, and a start time. */
+export function readCardEvents({ limit = 500, type, q, sinceMs } = {}) {
   let rows = readAll();
+  if (sinceMs) rows = rows.filter((e) => Date.parse(e.at) >= sinceMs);
   const counts = {};
   const sums = { won: 0, sold: 0, recycled: 0 };
   for (const e of rows) {
