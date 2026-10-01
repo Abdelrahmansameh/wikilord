@@ -42,7 +42,7 @@ export function validate(cfg) {
   const t = cfg.timing ?? {};
   for (const k of ['targetRemainingMs', 'extraBidLatencyMs', 'jitterMs', 'preCheckLeadMs', 'pollSeconds', 'horizonMinutes', 'maxPages', 'recalibrateMinutes'])
     if (typeof t[k] !== 'number') e.push(`timing.${k} must be a number`);
-  for (const kk of ['counterRemainingMs', 'searchBudgetSeconds', 'scanBudgetSeconds']) if (t[kk] !== undefined && typeof t[kk] !== 'number') e.push(`timing.${kk} must be a number`);
+  for (const kk of ['searchBudgetSeconds', 'scanBudgetSeconds']) if (t[kk] !== undefined && typeof t[kk] !== 'number') e.push(`timing.${kk} must be a number`);
   if (typeof t.targetRemainingMs === 'number' && t.targetRemainingMs <= 10000) e.push('timing.targetRemainingMs must be > 10000, otherwise the bid triggers the 10 s extension');
 
   const g = cfg.global ?? {};

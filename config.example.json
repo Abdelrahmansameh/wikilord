@@ -2,7 +2,7 @@
   "dryRun": true,
   "myUserId": "",
   "timing": {
-    "targetRemainingMs": 11000,
+    "targetRemainingMs": 15000,
     "extraBidLatencyMs": 150,
     "jitterMs": 60,
     "preCheckLeadMs": 5000,
@@ -10,7 +10,6 @@
     "horizonMinutes": 90,
     "maxPages": 3,
     "recalibrateMinutes": 30,
-    "counterRemainingMs": 3500,
     "searchBudgetSeconds": 8,
     "scanBudgetSeconds": 10
   },

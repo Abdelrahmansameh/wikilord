@@ -110,7 +110,6 @@ const SETTINGS = [
   ['Timing (bids)', [
     ['timing.targetRemainingMs', 'num', 'Bid lands this long before the end (ms)', 'Must stay above 10000, otherwise the bid extends the auction.'],
     ['timing.extraBidLatencyMs', 'num', 'Send bids this much earlier (ms)', 'Raise it if the log says an auction was extended by your bid.'],
-    ['timing.counterRemainingMs', 'num', 'Counter-bid lead when the normal window has passed (ms)', 'A counter normally lands 11 s before the new end; if that moment is gone it lands this long before the end (and extends the auction again).'],
     ['timing.jitterMs', 'num', 'Random timing jitter (± ms)'],
     ['timing.preCheckLeadMs', 'num', 'Re-check the auction this long before firing (ms)'],
     ['timing.horizonMinutes', 'num', 'Plan non-wishlist bids this far ahead (min)'],

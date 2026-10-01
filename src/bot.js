@@ -11,6 +11,7 @@ import { startUI } from './ui.js';
 import { changeTargets, readJournal, targetStatus, watchTargets } from './targets.js';
 import { catalogSearch } from './discover.js';
 import { cheapestPerCard } from './snipe-selection.js';
+import { counterWaitMs } from './counter-timing.js';
 
 const cfg = loadConfig();
 const LIVE = process.argv.includes('--live');
@@ -494,36 +495,31 @@ async function watchAuction(a, amount, decision) {
       }
     }
   } finally {
+    clearTimeout(counterTimers.get(a.id));
+    counterTimers.delete(a.id);
     watching.delete(a.id);
     pendingBids.delete(a.id);
   }
 }
 
-/** Schedule a new snipe after being outbid: normal lead time if it is still reachable, else a shorter one. */
+/** Schedule a counter for the normal lead time, or send now if that time has passed. */
 const counterTimers = new Map(); // auction id -> the one queued counter (a newer outbid replaces it)
 
 function queueCounter(cur, decision) {
   clearTimeout(counterTimers.get(cur.id));
   const oneWay = Math.max(clock.rttMs / 2 + T.extraBidLatencyMs, bidLatencyMs());
   const msLeft = Date.parse(cur.end_at) - serverNow();
-  let lead = T.targetRemainingMs;
-  let wait = msLeft - lead - oneWay;
-  if (wait < 300) {
-    lead = T.counterRemainingMs ?? 3500; // the normal window has passed; this bid will extend the auction again
-    wait = msLeft - lead - oneWay;
-  }
-  if (msLeft < 1500) return void log(`too late to counter on ${cur.card?.wikipedia_title} (${msLeft}ms left)`);
-  wait = Math.max(0, wait) + jitter();
-  log(`COUNTER queued: ${describe(cur)} bid=${decision.amount} in ${(Math.max(0, wait) / 1000).toFixed(1)}s (${(lead / 1000).toFixed(1)}s before the end)`);
+  const wait = counterWaitMs(msLeft, T.targetRemainingMs, oneWay, jitter());
+  if (wait === 0) log(`counter target already passed on ${cur.card?.wikipedia_title}; bidding immediately (${(msLeft / 1000).toFixed(1)}s left)`);
+  log(`COUNTER queued: ${describe(cur)} bid=${decision.amount} in ${(wait / 1000).toFixed(1)}s (target ${(T.targetRemainingMs / 1000).toFixed(1)}s before the end)`);
   counterTimers.set(cur.id, setTimeout(async () => {
     counterTimers.delete(cur.id);
     try {
-      // The single-auction lookup sometimes 404s on a live auction (site hiccup): then bid on what we know.
-      const fresh = await getAuction(cur.id).catch((e) => (log(`counter re-check failed (${e.message}); bidding on what we know`), cur));
-      if (fresh.status !== 'active' || fresh.current_bidder_id === cfg.myUserId) return; // ended, or already ours
-      const d = decide(cfg, fresh, cfg.myUserId, wishlist, tmap());
-      if (d.action !== 'bid') return void log(`counter dropped for ${fresh.card?.wikipedia_title}: ${d.reason}`);
-      await placeBid(fresh, d, Date.now(), { counter: true });
+      // The watcher just read this auction and will replace this timer if a newer rival bid appears.
+      // A lookup here can consume the whole lead time when the site is slow.
+      const d = decide(cfg, cur, cfg.myUserId, wishlist, tmap());
+      if (d.action !== 'bid') return void log(`counter dropped for ${cur.card?.wikipedia_title}: ${d.reason}`);
+      await placeBid(cur, d, Date.now(), { counter: true });
     } catch (e) {
       log('counter error:', e.message);
     }
