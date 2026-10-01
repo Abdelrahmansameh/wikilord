@@ -9,7 +9,7 @@ const rnd = ([a, b]) => a + Math.random() * (b - a);
  * Opens packs whenever they are available and recycles unwanted cards.
  * Everything that changes the account only runs when `dry` is false.
  */
-export function startPacks({ session, cfg, log, dry, getWishlist, control = { paused: false }, stats = {}, onBalance, isProtected = () => null, valueOf }) {
+export function startPacks({ session, cfg, log, dry, getWishlist, control = { paused: false }, stats = {}, onBalance, isProtected = () => null, valueOf, info = {} }) {
   const P = cfg.packs ?? { enabled: false };
   const R = cfg.recycle ?? { enabled: false };
   let pausedUntil = 0;
@@ -127,12 +127,27 @@ export function startPacks({ session, cfg, log, dry, getWishlist, control = { pa
         const body = r.text.slice(0, 200);
         if (/captcha|human|verif|turnstile/i.test(body)) {
           pausedUntil = Date.now() + 3600_000;
+          info.blocked = {
+            kind: 'human', until: pausedUntil,
+            title: 'Packs paused: the site wants a human check',
+            detail: 'Open one pack yourself in your browser and complete the check, then press Retry now. The bot never tries to get past it.',
+          };
           return void log(`packs: the site asks for human verification (HTTP ${r.status}). Pausing pack opening for 1h. Open a pack in your browser once to verify. ${body}`);
         }
-        pausedUntil = Date.now() + P.backoffMinutes * 60_000;
+        // Daily pack limit: retry later (the site may say how long); other errors back off a few minutes.
+        const daily = r.status === 429 || /limite quotidienne|rate_limit_daily/i.test(body);
+        const wait = daily ? Math.min(3600, Math.max(600, Number(r.json?.retry_after) || 3600)) * 1000 : P.backoffMinutes * 60_000;
+        pausedUntil = Date.now() + wait;
+        info.blocked = {
+          kind: daily ? 'daily' : 'error', until: pausedUntil,
+          title: daily ? 'Packs paused: daily pack limit reached' : `Packs paused: the site refused (HTTP ${r.status})`,
+          detail: (r.json?.error ?? body).toString().slice(0, 160) + (daily ? ' The bot tries again automatically.' : ' The bot tries again automatically.'),
+        };
         return void log(`packs: open failed HTTP ${r.status} ${body}. Backing off ${P.backoffMinutes} min.`);
       }
       opened++;
+      info.blocked = null;
+      info.lastOpenedAt = Date.now();
       stats.packs = (stats.packs ?? 0) + 1;
       remaining = r.json.packs_remaining ?? remaining - 1;
       const wl = getWishlist();
@@ -177,5 +192,19 @@ export function startPacks({ session, cfg, log, dry, getWishlist, control = { pa
   loop(sweepTick, () => R.sweepMinutes * 60, () => R.sweepMinutes * 12);
   setTimeout(sweepTick, 20_000);
   setTimeout(tick, 8_000);
+  let lastRetry = 0;
+  /** "Retry now" from the dashboard: forget the pause and try one pack run immediately. */
+  function retryNow() {
+    if (Date.now() - lastRetry < 30_000) return { ok: false, error: 'just retried a moment ago, give it a few seconds' };
+    lastRetry = Date.now();
+    pausedUntil = 0;
+    info.blocked = null;
+    if (control.paused) return { ok: false, error: 'the bot is paused (Pause button): press Resume first' };
+    if (busy) return { ok: true, note: 'a pack run is already in progress' };
+    tick();
+    return { ok: true };
+  }
+
   log(`packs: ${P.enabled ? 'on' : 'off'}, recycle: ${R.enabled ? (dry ? 'on (dry-run only)' : 'ON') : 'off (report only)'}, ${R.rules.length} recycle rule(s), default=${R.default}`);
+  return { retryNow };
 }

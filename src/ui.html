@@ -233,11 +233,20 @@ function renderDashboard() {
     h('td', {}, p.title ?? p.id.slice(0, 8)), h('td', {}, h('span', { class: 'chip' }, p.rarity ?? '?')), h('td', {}, p.amount), h('td', {}, p.rule),
     h('td', {}, fmtSec(p.fireInSec)), h('td', {}, clock(p.endAt))));
   return h('div', {},
+    s.packs?.blocked && h('div', { class: 'banner' },
+      h('div', {}, h('b', {}, '⚠ ' + s.packs.blocked.title), h('div', { style: 'font-size:12px;opacity:.9;margin-top:2px' },
+        s.packs.blocked.detail + ' Next automatic try: ' + new Date(s.packs.blocked.until).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + '.')),
+      h('button', { class: 'primary', onclick: async (e) => {
+        const b = e.currentTarget; b.disabled = true; b.textContent = 'Trying…';
+        const r = await api('/api/packs/retry', { method: 'POST', body: '{}' });
+        b.textContent = r.ok ? 'Asked the bot to try' : (r.data.error ?? 'failed');
+        setTimeout(() => { b.disabled = false; b.textContent = 'Retry now'; }, 6000);
+      } }, 'Retry now')),
     !s.connected && h('div', { class: 'banner' }, h('span', {}, '⚠ ' + (s.sessionProblem ?? 'Not connected.')), h('button', { class: 'primary', onclick: () => { tab = 'connect'; draw(); } }, 'Connect now')),
     h('div', { class: 'grid' },
       stat('Balance', s.balance), stat('Committed today', `${s.spentToday} / ${s.dailySpendCap}`, 'won + held'),
       stat('Bids placed', s.stats.bidsOk, s.stats.bidsFailed ? `${s.stats.bidsFailed} failed` : ''),
-      stat('Packs opened', s.stats.packs), stat('Cards recycled', s.stats.recycled),
+      stat('Packs opened', s.stats.packs, s.packs?.blocked ? 'PAUSED until ' + new Date(s.packs.blocked.until).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : s.packs?.lastOpenedAt ? 'last ' + new Date(s.packs.lastOpenedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''), stat('Cards recycled', s.stats.recycled),
       stat('Wishlist cards', s.wishlistSize), stat('Session valid for', `${s.sessionMinLeft} min`),
       stat('Clock / latency', `${s.clock.offsetMs} ms`, `rtt ${s.clock.rttMs} ms`), stat('Uptime', fmtSec(s.uptimeSec))),
     scanControls(s.scan),

@@ -7,7 +7,7 @@ import { readCardEvents } from './history.js';
 const PAGE = new URL('./ui.html', import.meta.url);
 
 /** Local-only dashboard. Listens on 127.0.0.1 and rejects cross-site requests. */
-export function startUI({ port, getState, control, log, session, onConnected, getValues = () => ({ cards: [] }), sellCard = async () => ({ ok: false, error: 'not available' }), refreshValues = () => ({ ok: false }), refreshValue = async () => ({ ok: false }), recycleCard = async () => ({ ok: false }), getWishlist = () => new Set(), setWishlisted = async () => ({ ok: false, error: 'still starting up' }), getReport = () => ({}), getIds = () => ({}), changeTargets = () => { throw new Error('not available'); }, readJournal = () => [], catalog = async () => ({ cards: [] }), restart = () => ({ ok: false, error: 'not available' }), scanNow = async () => ({ ok: false, error: 'still starting up' }) }) {
+export function startUI({ port, getState, control, log, session, onConnected, getValues = () => ({ cards: [] }), sellCard = async () => ({ ok: false, error: 'not available' }), refreshValues = () => ({ ok: false }), retryPacks = () => ({ ok: false }), refreshValue = async () => ({ ok: false }), recycleCard = async () => ({ ok: false }), getWishlist = () => new Set(), setWishlisted = async () => ({ ok: false, error: 'still starting up' }), getReport = () => ({}), getIds = () => ({}), changeTargets = () => { throw new Error('not available'); }, readJournal = () => [], catalog = async () => ({ cards: [] }), restart = () => ({ ok: false, error: 'not available' }), scanNow = async () => ({ ok: false, error: 'still starting up' }) }) {
   const send = (res, code, body, type = 'application/json') => {
     res.writeHead(code, { 'content-type': type, 'cache-control': 'no-store' });
     res.end(typeof body === 'string' || Buffer.isBuffer(body) ? body : JSON.stringify(body));
@@ -33,6 +33,10 @@ export function startUI({ port, getState, control, log, session, onConnected, ge
       if (req.method === 'GET' && url.pathname === '/') return send(res, 200, fs.readFileSync(PAGE), 'text/html; charset=utf-8');
       if (req.method === 'GET' && url.pathname === '/api/state') return send(res, 200, getState());
       if (req.method === 'GET' && url.pathname === '/api/values') return send(res, 200, getValues());
+      if (req.method === 'POST' && url.pathname === '/api/packs/retry') {
+        const r = retryPacks();
+        return send(res, r.ok ? 200 : 400, r);
+      }
       if (req.method === 'POST' && url.pathname === '/api/values/refresh') return send(res, 200, refreshValues());
       if (req.method === 'POST' && url.pathname === '/api/values/refresh-one') {
         const r = await refreshValue(JSON.parse((await readBody(req)) || '{}').cardId);

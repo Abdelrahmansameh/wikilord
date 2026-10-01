@@ -109,6 +109,8 @@ function recentRecords() {
   }
 }
 const stats = { bidsOk: 0, bidsFailed: 0, packs: 0, recycled: 0, earned: 0, won: 0, lost: 0, wonSpent: 0, listed: 0, soldCount: 0, soldRevenue: 0 };
+const packInfo = { blocked: null, lastOpenedAt: null };
+let packsCtl = { retryNow: () => ({ ok: false, error: 'still starting up' }) };
 const sellInfo = { active: 0, max: 5, preview: [], lastRunAt: null };
 const pendingBids = new Map(); // auction id -> { title, amount } for bids whose auction has not finished
 let startBalance = null;
@@ -761,6 +763,7 @@ async function main() {
       sellCard: (cardId, opts) => values.sell(cardId, opts),
       scanNow,
       refreshValues: () => values.refreshAll(),
+      retryPacks: () => packsCtl.retryNow(),
       refreshValue: (cardId) => values.refreshOne(cardId),
       recycleCard: async (cardId, opts) => {
         const r = await values.recycle(cardId, opts);
@@ -797,6 +800,11 @@ async function main() {
           heldInBids: [...pendingBids.values()].reduce((s, p) => s + p.amount, 0),
         },
         sell: { enabled: cfg.sell.enabled, active: sellInfo.active, max: sellInfo.max, listed: stats.listed, soldCount: stats.soldCount, soldRevenue: stats.soldRevenue, factor: cfg.sell.priceFactor, preview: sellInfo.preview, lastRunAt: sellInfo.lastRunAt },
+        packs: {
+          enabled: cfg.packs.enabled,
+          blocked: packInfo.blocked && packInfo.blocked.until > Date.now() ? packInfo.blocked : null,
+          lastOpenedAt: packInfo.lastOpenedAt,
+        },
         spentToday: committedToday(),
         dailySpendCap: cfg.global.dailySpendCap,
         stats,
@@ -833,8 +841,9 @@ async function main() {
   await poll().catch((e) => log('first scan failed:', e.message));
   if (ONCE) return process.exit(0);
   watchConfig(cfg, log);
-  startPacks({
+  packsCtl = startPacks({
     session, cfg, log, dry: DRY, getWishlist: () => wishlist, control, stats, isProtected: protectedBy,
+    info: packInfo,
     valueOf: (cardId, rarity) => (values.averageOf ? values.averageOf(cardId, rarity) : Promise.resolve(null)),
     onBalance: (nb) => {
       const gained = nb - (balance ?? nb);
