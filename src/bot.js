@@ -46,7 +46,8 @@ const log = (...a) => {
 const control = { paused: false };
 
 /** The target list (targets.json) and hard limits (limits.json), re-read when the files change. */
-const book = watchTargets(log);
+const wonIds = wonCardIds();
+const book = watchTargets(log, wonIds);
 const tmap = () => (cfg.targets?.enabled === false ? new Map() : book.active());
 /** Auctions for active targets seen in the last scan, used to save money for higher-priority targets. */
 let targetAuctions = new Map(); // auction id -> { a, t }
@@ -77,7 +78,6 @@ function bidLatencyMs() {
 }
 
 /** Cards the bot won by bidding (remembered across restarts), plus why a card must never be sold or recycled. */
-const wonIds = wonCardIds();
 const bidTitles = bidOnTitles(); // older wins, from before the card history existed
 const protectedBy = (facts) => {
   if (wonIds.has(facts.cardId)) return 'bought by a bid rule';
@@ -110,6 +110,7 @@ function recentRecords() {
 }
 const stats = { bidsOk: 0, bidsFailed: 0, packs: 0, recycled: 0, earned: 0, won: 0, lost: 0, wonSpent: 0, listed: 0, soldCount: 0, soldRevenue: 0 };
 const packInfo = { blocked: null, lastOpenedAt: null };
+let bidHumanCheck = null;
 let packsCtl = { retryNow: () => ({ ok: false, error: 'still starting up' }) };
 const sellInfo = { active: 0, max: 5, preview: [], lastRunAt: null };
 const pendingBids = new Map(); // auction id -> { title, amount } for bids whose auction has not finished
@@ -397,7 +398,7 @@ async function preCheck(id) {
   }
   if (plans.get(id) !== plan) return; // a later scan chose a cheaper auction for this card
   if (a.status !== 'active') return void (plans.delete(id), log(`auction ${id} not active (${a.status})`));
-  const d = decide(cfg, a, cfg.myUserId, wishlist, tmap());
+  const d = decide(cfg, a, cfg.myUserId, wishlist, tmap(), wonIds);
   if (d.action !== 'bid') return void (plans.delete(id), log(`drop ${describe(a)}: ${d.reason}`));
   if (a.end_at !== plan.endAt) log(`end time moved ${plan.endAt} -> ${a.end_at}`);
   try {
@@ -470,6 +471,7 @@ async function watchAuction(a, amount, decision) {
           wonIds.add(a.card_id);
           wins.push({ at: Date.now(), price: cur.final_price ?? amount, theme: decision.theme ?? null, cardId: a.card_id, title });
           cardEvent('won', { cardId: a.card_id, title, rarity: a.snapshot_rarity, price: cur.final_price ?? amount, rule: ruleName, ...(decision.theme ? { theme: decision.theme } : {}) });
+          book.reload(); // remove any fulfilled target, including unthemed or disabled ones
           log(`WON ${title} for ${cur.final_price ?? amount}`);
         } else {
           stats.lost++;
@@ -487,7 +489,7 @@ async function watchAuction(a, amount, decision) {
           log(`no more counters for ${title} (limit ${countersFor(decision)})`);
           continue;
         }
-        const d = decide(cfg, cur, cfg.myUserId, wishlist, tmap());
+        const d = decide(cfg, cur, cfg.myUserId, wishlist, tmap(), wonIds);
         if (d.action !== 'bid') {
           log(`not countering ${title}: ${d.reason}`);
           continue;
@@ -519,7 +521,7 @@ function queueCounter(cur, decision) {
     try {
       // The watcher just read this auction and will replace this timer if a newer rival bid appears.
       // A lookup here can consume the whole lead time when the site is slow.
-      const d = decide(cfg, cur, cfg.myUserId, wishlist, tmap());
+      const d = decide(cfg, cur, cfg.myUserId, wishlist, tmap(), wonIds);
       if (d.action !== 'bid') return void log(`counter dropped for ${cur.card?.wikipedia_title}: ${d.reason}`);
       await placeBid(cur, d, Date.now(), { counter: true });
     } catch (e) {
@@ -529,6 +531,11 @@ function queueCounter(cur, decision) {
 }
 
 async function placeBid(a, decision, fireAt, { counter = false } = {}) {
+  // A different auction may have been won while this scheduled bid was waiting to fire.
+  if (wonIds.has(a.card_id)) {
+    plans.delete(a.id);
+    return void log(`skip already bought card: ${describe(a)}`);
+  }
   if (control.paused) {
     plans.delete(a.id);
     return void log(`PAUSED: skipped bid ${decision.amount} on ${describe(a)}`);
@@ -551,7 +558,7 @@ async function placeBid(a, decision, fireAt, { counter = false } = {}) {
   // "bid too low": the server says the minimum. Retry at once (still well before the last 10 s) if the rule's max allows it.
   if (r.status === 409 && r.json?.code === 'bid_too_low' && Number.isFinite(r.json.min)) {
     const max = decision.max ?? 0;
-    const why2 = r.json.min > max ? `minimum ${r.json.min} is above this ${decision.target ? 'target' : 'rule'}'s max ${max}` : budgetOk(r.json.min, { skipGap: true, auctionId: a.id, counter, decision });
+    const why2 = wonIds.has(a.card_id) ? 'already bought by the bot' : r.json.min > max ? `minimum ${r.json.min} is above this ${decision.target ? 'target' : 'rule'}'s max ${max}` : budgetOk(r.json.min, { skipGap: true, auctionId: a.id, counter, decision });
     if (!why2) {
       log(`bid ${decision.amount} was too low (minimum ${r.json.min}); retrying at ${r.json.min}`);
       decision = { ...decision, amount: r.json.min };
@@ -559,6 +566,10 @@ async function placeBid(a, decision, fireAt, { counter = false } = {}) {
     } else log(`bid too low and not retried: ${why2}`);
   }
   const ok = r.status === 200 && r.json?.current_bid !== undefined;
+  if (ok) bidHumanCheck = null;
+  else if (/human_verification_required|anti-bot|captcha|v[ée]rification/i.test(r.text)) {
+    bidHumanCheck = { at: Date.now(), title: 'Bids blocked: the site wants a human check', cardTitle: a.card?.wikipedia_title ?? null };
+  }
   if (ok) {
     balance = r.json.bidder_balance ?? balance;
   }
@@ -615,7 +626,7 @@ async function pollOnce(withWishlist) {
   for (const a of list) {
     const t = targets.get(a.card_id);
     if (!t || Date.parse(a.end_at) <= serverNow()) continue;
-    const d = decide(cfg, a, cfg.myUserId, wishlist, targets);
+    const d = decide(cfg, a, cfg.myUserId, wishlist, targets, wonIds);
     if (d.action === 'bid') targetCandidates.push({ auction: a, decision: d });
   }
   targetAuctions = new Map(cheapestPerCard(targetCandidates).map(({ auction: a, decision: d }) => [a.id, { a, t: targets.get(a.card_id), amount: d.amount }]));
@@ -625,7 +636,7 @@ async function pollOnce(withWishlist) {
   // Keep plans found in earlier scans when their auction is absent from this scan.
   for (const [id, p] of plans) {
     if (seenIds.has(id) || pendingCardIds.has(p.auction.card_id)) continue;
-    const d = decide(cfg, p.auction, cfg.myUserId, wishlist, targets);
+    const d = decide(cfg, p.auction, cfg.myUserId, wishlist, targets, wonIds);
     if (d.action === 'bid') candidates.set(id, { auction: p.auction, decision: d });
   }
   for (const a of list) {
@@ -634,7 +645,7 @@ async function pollOnce(withWishlist) {
     if (pendingCardIds.has(a.card_id)) continue;
     const oneWay = Math.max(clock.rttMs / 2 + T.extraBidLatencyMs, bidLatencyMs());
     if (!plans.has(a.id) && endMs - T.targetRemainingMs - oneWay - clock.offsetMs < Date.now() - 1000) continue;
-    const d = decide(cfg, a, cfg.myUserId, wishlist, targets);
+    const d = decide(cfg, a, cfg.myUserId, wishlist, targets, wonIds);
     if (d.action !== 'bid') continue;
     if (watching.has(a.id)) continue;
     candidates.set(a.id, { auction: a, decision: d });
@@ -805,6 +816,7 @@ async function main() {
           blocked: packInfo.blocked && packInfo.blocked.until > Date.now() ? packInfo.blocked : null,
           lastOpenedAt: packInfo.lastOpenedAt,
         },
+        bidHumanCheck,
         spentToday: committedToday(),
         dailySpendCap: cfg.global.dailySpendCap,
         stats,

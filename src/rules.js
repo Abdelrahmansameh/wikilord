@@ -68,11 +68,13 @@ const nextAmount = (a, inc) => (a.current_bid == null ? a.base_amount : Math.max
  * Returns { action: 'bid', rule, amount, max, counters, target?, priority?, theme? } or { action: 'skip', reason }.
  * A card on the target list (`targets`: card id -> target) is decided by its target: its own max bid, priority and
  * theme. Everything else goes through the bid rules, first matching rule wins.
+ * Lifetime purchases are skipped even when the card is no longer owned or skipOwned is disabled.
  */
-export function decide(cfg, a, myUserId, wishlist = new Set(), targets = new Map()) {
+export function decide(cfg, a, myUserId, wishlist = new Set(), targets = new Map(), purchasedCardIds = new Set()) {
   if (a.status !== 'active') return { action: 'skip', reason: 'not active' };
   if (a.seller_id === myUserId) return { action: 'skip', reason: 'own listing' };
   if (a.current_bidder_id === myUserId) return { action: 'skip', reason: 'already leading' };
+  if (purchasedCardIds.has(a.card_id)) return { action: 'skip', reason: 'already bought by the bot' };
   if (cfg.global.skipOwned && a.owned) return { action: 'skip', reason: 'already owned' };
 
   const t = targets.get(a.card_id);

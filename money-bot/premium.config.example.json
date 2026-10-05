@@ -1,0 +1,101 @@
+{
+  "dryRun": true,
+  "cycleMinutes": 3,
+  "maxActionsPerCycle": 25,
+  "actionGapMs": [
+    3500,
+    5000
+  ],
+  "ui": {
+    "port": 8789
+  },
+  "packs": {
+    "enabled": true,
+    "maxPerCycle": 5,
+    "gapMs": [
+      3500,
+      5000
+    ],
+    "backoffMinutes": 10
+  },
+  "listing": {
+    "durationMinutes": 60,
+    "maxConcurrent": 5
+  },
+  "replacement": {
+    "enabled": true,
+    "minGainCoins": 15,
+    "minRatio": 2
+  },
+  "recycleValue": 1,
+  "listingFee": 0,
+  "targetProbability": 0.8,
+  "outcomePenalty": 0.25,
+  "modelLowerPenalty": 0.5,
+  "modelUpperBonus": 1.28,
+  "arrivalWindowHours": 48,
+  "minArrivalObservations": 12,
+  "maxMarketAgeHours": 24,
+  "modelRefreshMinutes": 30,
+  "marketDb": "../market-analyzer/market.db",
+  "premium": {
+    "listingDurationExperiment": false,
+    "enabled": true,
+    "minSold": 4,
+    "minMedian": 500,
+    "maxAskRatio": 1.25,
+    "minSaleProbability": 0.25,
+    "stepDownPct": 0.05
+  },
+  "buy": {
+    "enabled": true,
+    "minSold": 8,
+    "topCount": 50000,
+    "minProfit": 200,
+    "exitProbability": 0.8,
+    "reserveCoins": 1000,
+    "reserveFraction": 0.5,
+    "scanSeconds": 15,
+    "freshLookbackMinutes": 60,
+    "topRefreshMinutes": 30,
+    "maxRowsPerScan": 10000,
+    "maxQuotesPerScan": 240,
+    "targetRemainingMs": 20000,
+    "preCheckLeadMs": 8000,
+    "extraBidLatencyMs": 150,
+    "maxCounters": 6,
+    "bidIncrement": 1,
+    "minGapBetweenBidsMs": 1500,
+    "hybridEnabled": true,
+    "liquidMinSold": 12,
+    "minBuyers": 4,
+    "minSellers": 3,
+    "resaleAttempts": 6,
+    "repeatCorrelation": 0.5,
+    "horizonProbability": 0.85,
+    "probabilityRiskWeight": 0.5,
+    "premiumMinProfit": 200,
+    "premiumMinRoi": 0.35,
+    "liquidMinProfit": 75,
+    "liquidMinRoi": 0.6,
+    "liquidResaleAskRatio": 0.8,
+    "maxBuyRatio": 0.6,
+    "quoteCacheSeconds": 60,
+    "maxQueueSize": 2000,
+    "maxPlans": 5,
+    "planningHorizonMinutes": 15,
+    "liveRefreshLeadSeconds": 90,
+    "maxLiveRefreshPerScan": 12,
+    "liveRequestGapMs": 350,
+    "maxResaleExposure": 5,
+    "minProfitPerSlotHour": 50,
+    "slotOpportunityCoinsPerHour": 25,
+    "residualValueRatio": 0,
+    "minAttemptProbability": 0.65
+  },
+  "trades": {
+    "acceptIncoming": true,
+    "pollSeconds": 30,
+    "acceptGapMs": 1000
+  }
+}

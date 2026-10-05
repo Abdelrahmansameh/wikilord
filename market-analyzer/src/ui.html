@@ -68,6 +68,8 @@ main { padding: 16px; max-width: 1400px; margin: 0 auto; }
 table { border-collapse: collapse; width: 100%; font-size: 13px; }
 th, td { padding: 5px 8px; text-align: right; border-bottom: 1px solid var(--grid); white-space: nowrap; }
 th { color: var(--ink-2); font-weight: 600; position: sticky; top: 0; background: var(--surface); }
+.table-sort { padding: 0; border: 0; background: none; color: inherit; font: inherit; font-weight: inherit; cursor: pointer; }
+.table-sort:hover, .table-sort.active { color: var(--accent); }
 td.l, th.l { text-align: left; }
 td { font-variant-numeric: tabular-nums; }
 tr.click { cursor: pointer; }
@@ -82,6 +84,7 @@ a.user:hover { text-decoration: underline; }
 .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
 .banner { background: var(--warn-bg); border: 1px solid var(--border); border-radius: 10px; padding: 10px 14px; margin-bottom: 12px; display: none; }
 .banner.on { display: block; }
+#loadNotice[hidden], #loadRetry[hidden] { display: none; }
 button.btn { font: inherit; background: var(--accent); color: #fff; border: 0; border-radius: 6px; padding: 6px 12px; cursor: pointer; }
 button.btn.ghost { background: var(--raised); color: var(--ink); border: 1px solid var(--border); }
 textarea { width: 100%; min-height: 90px; font: 12px ui-monospace, monospace; color: var(--ink); background: var(--raised); border: 1px solid var(--border); border-radius: 6px; padding: 8px; }
@@ -121,6 +124,7 @@ span[data-tip] { text-decoration: underline dotted; text-decoration-color: var(-
     <button data-tab="timing">Timing</button>
     <button data-tab="players">Players</button>
     <button data-tab="cards">Cards</button>
+    <button data-tab="rankings">Rankings</button>
     <button data-tab="browse">Browse</button>
     <button data-tab="collector">Collector</button>
   </nav>
@@ -137,6 +141,7 @@ span[data-tip] { text-decoration: underline dotted; text-decoration-color: var(-
 </header>
 
 <main>
+  <div id="loadNotice" class="row muted" role="status" hidden><span id="loadText"></span><button id="loadRetry" class="btn ghost" hidden>Retry</button></div>
   <div id="loginBanner" class="banner">
     <b id="loginTitle">Login needed.</b> <span id="loginText">The collector is paused until you paste a cookie.</span> Open the <a href="#" data-go="collector">Collector</a> tab.
   </div>
@@ -150,6 +155,8 @@ span[data-tip] { text-decoration: underline dotted; text-decoration-color: var(-
         <div class="chart small"><canvas id="c-volume"></canvas></div></div>
       <div class="card wide"><h2>How many times each card sold</h2><p class="sub" id="turnover-sub">Share of recorded cards by number of recorded sales</p>
         <div class="chart small"><canvas id="c-turnover"></canvas></div></div>
+      <div class="card wide"><h2>How many auctions each card appeared in</h2><p class="sub" id="appearances-sub">Share of seen cards by number of recorded auctions</p>
+        <div class="chart small"><canvas id="c-appearances"></canvas></div></div>
       <div class="card wide"><h2>Just recorded</h2><p class="sub">Latest settled auctions (click for details)</p>
         <div class="scroll"><table id="t-latest"></table></div></div>
     </div>
@@ -162,17 +169,14 @@ span[data-tip] { text-decoration: underline dotted; text-decoration-color: var(-
       <div class="card wide"><h2>Price distribution</h2><p class="sub">Share of sold auctions per price band (log bands), by rarity</p>
         <div class="legend" id="lg-hist"></div><div class="chart"><canvas id="c-hist"></canvas></div></div>
       <div class="card wide">
-        <div class="row"><div><h2>Price vs card stat</h2><p class="sub">Latest 4,000 sales of one rarity</p></div><span class="spacer"></span>
+        <div class="row"><div><h2>Price vs pageviews or starting price</h2><p class="sub">Latest 4,000 sales of one rarity</p></div><span class="spacer"></span>
           <select id="sc-rarity"></select>
-          <select id="sc-x"><option value="q_score">q_score</option><option value="power">ATK + DEF</option><option value="atk">ATK</option>
-            <option value="def">DEF</option><option value="pageviews">pageviews</option><option value="base">starting price</option></select>
+          <select id="sc-x"><option value="pageviews">pageviews</option><option value="base">starting price</option></select>
           <label><input type="checkbox" id="sc-log" checked> log price</label></div>
         <div class="chart"><canvas id="c-scatter"></canvas></div></div>
-      <div class="card"><h2>Estimate a card</h2><p class="sub">What similar cards sold for (same rarity, q_score ± band)</p>
+      <div class="card"><h2>Estimate a card</h2><p class="sub">Market benchmark for the same rarity and shininess; individual collection demand varies</p>
         <div class="row"><select id="es-rarity"></select>
           <select id="es-shiny"><option value="0">normal</option><option value="1">shiny</option><option value="">either</option></select>
-          <input id="es-q" type="number" placeholder="q_score" style="width:90px">
-          <input id="es-band" type="number" value="5" title="± band" style="width:60px">
           <select id="es-days"><option value="7">7 d</option><option value="30" selected>30 d</option><option value="3650">all</option></select>
           <button class="btn" id="es-go">Estimate</button></div>
         <div id="es-out" class="kv"></div></div>
@@ -195,16 +199,17 @@ span[data-tip] { text-decoration: underline dotted; text-decoration-color: var(-
         <span class="muted">Min auctions</span>
         <input id="cat-min" type="number" value="10" min="1" style="width:70px">
         <input id="cat-q" placeholder="Filter groups…" style="flex:1;min-width:140px">
-        <select id="cat-show"><option value="25">top 25</option><option value="50" selected>top 50</option><option value="100">top 100</option><option value="250">top 250</option><option value="100000">all</option></select>
+        <select id="cat-show"><option value="25">top 25</option><option value="50" selected>top 50</option><option value="100">top 100</option><option value="250">top 250</option><option value="100000">all (paged)</option></select>
       </div>
     </div>
     <div class="grid">
       <div class="card"><h2 id="cat-bars-title">Top groups</h2><p class="sub">Top 15 by the sort metric</p>
         <div class="chart" style="height:380px"><canvas id="c-cat-bars"></canvas></div></div>
-      <div class="card"><h2>Price vs demand map</h2><p class="sub">Right = sells more often · up = sells for more than its rarity usually does · bigger = more auctions. Click a dot.</p>
+      <div class="card"><h2>Price vs demand map</h2><p class="sub" id="cat-map-sub">Right = sells more often · up = sells for more than its rarity usually does · bigger = more auctions. Click a dot.</p>
         <div class="chart" style="height:380px"><canvas id="c-cat-map"></canvas></div></div>
       <div class="card wide"><h2>All groups</h2><p class="sub" id="cat-sub">Click a column header to sort, a row for details</p>
-        <div class="scroll" style="max-height:640px"><table id="t-cats"></table></div></div>
+        <div class="scroll" style="max-height:640px"><table id="t-cats"></table></div>
+        <div class="row" id="cat-pages" style="margin:8px 0 0;display:none"><button class="btn ghost" id="cat-prev">← Prev</button><span class="muted" id="cat-page"></span><button class="btn ghost" id="cat-next">Next →</button></div></div>
     </div>
   </section>
 
@@ -269,11 +274,23 @@ span[data-tip] { text-decoration: underline dotted; text-decoration-color: var(-
           <div class="chart" id="card-chart-wrap"><canvas id="c-card-prices"></canvas></div>
           <p class="muted" id="card-chart-empty" style="display:none">No sale price recorded yet.</p></div>
         <div class="card"><h2>Card details</h2><div class="kv" id="card-details"></div></div>
-        <div class="card"><h2>Similar cards</h2><p class="sub">Same current rarity and shininess, q_score ±5, last 30 days</p><div class="kv" id="card-comparables"></div></div>
+        <div class="card"><h2>Similar cards</h2><p class="sub">Same current rarity and shininess, last 30 days; collection demand varies by card</p><div class="kv" id="card-comparables"></div></div>
         <div class="card wide"><h2>Recorded auction history</h2><p class="sub">New listings, completed auctions and cancellations for this card. Click a row for its bids.</p>
           <div class="scroll"><table id="t-card-history"></table></div>
           <div class="row" style="margin-top:8px"><button class="btn ghost" id="card-prev">← Prev</button><span id="card-page" class="muted"></span><button class="btn ghost" id="card-next">Next →</button></div></div>
       </div>
+    </div>
+  </section>
+
+  <section class="tab" id="tab-rankings">
+    <div class="card" style="margin-bottom:12px">
+      <div class="row"><div><h2>Top 500 cards</h2><p class="sub">Full recorded history; the filters above do not apply here. Click a metric column to rank by it, or a card to open its details.</p></div>
+        <span class="spacer"></span><label for="card-sort">Rank by</label><select id="card-sort">
+          <option value="sold">Number traded (sales)</option><option value="median">Median sale price</option>
+          <option value="volume">Total traded value</option><option value="listed">Auctions ended</option>
+        </select></div>
+      <p class="sub" id="card-ranking-title">Loading top 500 cards…</p>
+      <div class="scroll" style="max-height:640px"><table id="t-card-rankings"></table></div>
     </div>
   </section>
 
@@ -290,9 +307,13 @@ span[data-tip] { text-decoration: underline dotted; text-decoration-color: var(-
         <textarea id="cookie" placeholder="sb-cyrxjeppjqsxxjayfrur-auth-token.0=base64-…"></textarea>
         <div class="row" style="margin-top:8px"><button class="btn" id="cookie-save">Check &amp; save</button><span id="cookie-msg"></span></div></div>
       <div class="card wide"><h2>Account 2</h2>
-        <p class="sub">Sign in with a different player account, then paste its cookie. This account has its own session and request budget. Both accounts write to the same auction database.</p>
+        <p class="sub">Sign in with a different player account, then paste its cookie. This account has its own session and request budget. All accounts write to the same auction database.</p>
         <textarea id="cookie-secondary" placeholder="Cookie for a different account"></textarea>
         <div class="row" style="margin-top:8px"><button class="btn" id="cookie-secondary-save">Check &amp; save account 2</button><span id="cookie-secondary-msg"></span></div></div>
+      <div class="card wide"><h2>Account 3</h2>
+        <p class="sub">Sign in with a third player account and paste its cookie. This account scans listing feeds more often and leaves auction-result lookups to accounts 1 and 2. The cookie is saved to <code>market-analyzer/.env.tertiary</code>.</p>
+        <textarea id="cookie-tertiary" placeholder="Cookie for a third account"></textarea>
+        <div class="row" style="margin-top:8px"><button class="btn" id="cookie-tertiary-save">Check &amp; save account 3</button><span id="cookie-tertiary-msg"></span></div></div>
     </div>
   </section>
 </main>
@@ -330,8 +351,6 @@ const TIPS = {
   'Found via': 'Which feed first found this auction. It still has just one database record if both feeds see it.',
   'Card': 'The Wikipedia article the card is based on, followed by its category.',
   'Rarity': 'Rarity when the card was listed, from most common to rarest: C → PC → R → SR → UR → L. ✦ = shiny.',
-  'q': 'q_score (0–100): the card\'s quality rating. Within a rarity it sets ATK/DEF, and higher q usually sells for more. It seems to follow how detailed the Wikipedia article is, not how popular it is.',
-  'q_score': 'Quality rating, 0–100. Within a rarity it sets ATK/DEF, and higher q usually sells for more. It seems to follow how detailed the Wikipedia article is, not how popular it is.',
   'Start': 'Starting price set by the seller. If they lowered it during the auction, this is the lowered price.',
   'Final': 'What the card sold for (the winning bid), or "unsold" if nobody bid.',
   'Bids': 'Number of bids placed on this auction, including outbid ones.',
@@ -382,9 +401,14 @@ const TIPS = {
   'Waiting for result': 'Auctions seen on the "ending soon" list whose result hasn\'t been fetched yet. "Due now" = already ended. A small number is normal; one that keeps growing means the collector is falling behind.',
   'Requests (5 min)': 'Calls made to wiki-masters in the last 5 minutes, and the average per second. Capped by maxRps in config.json.',
   'Errors (5 min)': 'Failed calls. If the site answers 429 (too many requests) or 5xx, the collector drops to a quarter of its speed for a minute.',
-  'Coverage gaps': 'Seconds of auction end-times the list sweep couldn\'t reach before they passed. Auctions ending in a gap may be missing. Should stay at 0.',
+  'Normal-scan gaps': 'Seconds of auction end-times the accounts 1 and 2 ending scan could not reach before they passed. The scout may have seen listings in those windows. Shown for the last hour and since collector start.',
   'Database': 'Size of market.db on disk, auctions with a stored result, and bids stored.',
   'Seen on both feeds': 'Auction IDs observed on both recent listings and ending soon. Each has only one database row.',
+  'Account 3 only': 'Distinct listing IDs seen in account 3 list responses but never in account 1 or 2 list responses since account tracking began. Older sightings include the period before account 3 became a dedicated scout.',
+  'Scout only': 'Listings first recorded since the dedicated scout started that account 3 saw but accounts 1 and 2 have not seen in their own list responses. This is observed added coverage; it can decrease as the normal scans catch up.',
+  'Listings by account': 'Distinct listing IDs observed in each account’s recent or ending-soon list responses since account tracking began. One listing can count for multiple accounts.',
+  'Account 3 overlap': 'Listing IDs seen by account 3 and by at least one of accounts 1 or 2 since account tracking began.',
+  'Exclusive listings': 'Distinct listing IDs seen by exactly one account since account tracking began. Shared requests mean these counts reflect which account handled the observed pages, not how many auctions the other accounts would have missed.',
   // collector details
   'Account': 'The wiki-masters account the collector is logged in as.',
   'Running since': 'When the collector was last started.',
@@ -412,12 +436,11 @@ const TIPS = {
   'First recorded': 'When the collector first saw this card in an auction. Earlier trades may exist outside this database.',
   'Sales / ended': 'Recorded sales divided by completed sold plus unsold auctions for this physical card.',
   // auction popup
-  'ATK / DEF': 'Card stats when it was listed. Within a rarity they rise with q_score.',
   'Pageviews': 'Wikipedia pageviews of the article. Rarer cards come from far more viewed articles.',
   'Listed at': 'When the seller put the card up.',
   'Duration': 'Time from listing to the final scheduled end. Late bids can extend the original auction length.',
   'Bids / bidders': 'Bids placed / different players who bid.',
-  'Similar cards': 'Recent sales of comparable cards: same rarity and shininess, q_score within ±5, last 30 days. A guide to what this card is worth.',
+  'Similar cards': 'Recent sales of cards with the same rarity and shininess, last 30 days. A broad market benchmark; collection demand varies by card.',
   'p25 / median / p75': 'Middle half of comparable sale prices, with the median in bold. A fair price is usually in this range.',
   'p10 / p90': 'The cheap and expensive ends of comparable sales: only 1 in 10 sold below p10 or above p90.',
 };
@@ -426,11 +449,12 @@ const CARD_TIPS = {
   'c-ended': 'Every auction that ended in each time slice. Sold = got at least one bid. Unsold = nobody bid and the card went back to the seller.',
   'c-volume': 'Total wikibidous paid in each time slice: the sum of the final prices of sold auctions.',
   'c-turnover': 'Each bar is a number of recorded sales (0, 1, 2, …). Its height is the share of cards auctioned in the selected range that sold exactly that many times. 0 = put up for auction but never sold. Tall bars at 2+ mean a lot of flipping.',
+  'c-appearances': 'Each bar is the number of distinct auctions seen for one physical card in the selected range, including active, cancelled, sold and unsold listings. Auctions are counted when first seen, so every included card appears at least once.',
   't-latest':'The most recent auctions whose final result was recorded. Click a row for its bids, price history and similar sales.',
   't-rarity': 'One row per rarity (✦ = shiny). Price columns use sold auctions only. Click a row to filter every tab to that rarity.',
   'c-hist': 'For each rarity, the share of its sales in each price band. Bands get wider as prices rise so cheap and expensive cards fit on one chart. Hover a point for the exact share.',
-  'c-scatter': 'Each dot is one sale of the chosen rarity. Shows whether the stat on the horizontal axis goes with higher prices. Hover a dot for the card name.',
-  'es-out': 'Finds recent auctions of the same rarity and shininess whose q_score is within ± band of yours, and shows what they sold for. Use it to price a card before buying or listing it.',
+  'c-scatter': 'Each dot is one sale of the chosen rarity. Compare final prices with Wikipedia pageviews or starting prices. Hover a dot for the card name.',
+  'es-out': 'Shows recent sale prices for the chosen rarity and shininess. A broad market benchmark; check the exact card’s history and collection demand when pricing it.',
   't-start': 'Groups auctions by the starting price the seller set. Shows whether listing higher makes a card less likely to sell, and what it ends up going for.',
   'c-cat-bars': 'The 15 groups that rank highest on the "Sort by" metric (or lowest, if you flipped the order). Click a bar for details.',
   'c-cat-map': 'Every group as a dot. Right = a larger share of its auctions sell. Up = its cards sell for more than cards of the same rarity usually do (price index, log scale). Bigger dot = more auctions. Top-right groups are both in demand and expensive. Click a dot for details.',
@@ -450,22 +474,21 @@ const CARD_TIPS = {
   'c-detail': 'Technical state of the collector.',
   'c-card-prices': 'The final price of each recorded sale of this exact card, ordered by end time. Click a point to open that auction.',
   'card-details': 'Current observed card stats and its recorded auction history. Card properties can change over time.',
-  'card-comparables': 'Recent sales of other cards with similar rarity, shininess and q_score. This is a market benchmark, not this exact card’s history.',
+  'card-comparables': 'Recent sales of other cards with the same rarity and shininess. This is a market benchmark, not this exact card’s history.',
   't-card-history': 'Every auction of this exact card, including active, cancelled, sold and unsold. Rows open the bid detail.',
   'cookie': 'The login the collector uses. You only need to paste a new one if the top bar says "needs login".',
   'cookie-secondary': 'A different player account, with its own request budget. The same auction ID is saved only once.',
+  'cookie-tertiary': 'A third player account, with its own request budget. Its list sightings are tracked by account.',
 };
 const CONTROL_TIPS = {
   '#range': 'Time window: only auctions that ended in this period are counted. Applies to every tab.',
   '#rarity': 'Rarity filter: click several to combine, "All" to clear. From most common to rarest: C → PC → R → SR → UR → L.',
   '#shiny': 'Shiny cards (✦) are a special variant that can sell for more. Pick one kind to compare like with like.',
   '#sc-rarity': 'Which rarity to plot. One at a time, since rarities sit at very different prices.',
-  '#sc-x': 'Card stat on the horizontal axis.',
+  '#sc-x': 'Wikipedia pageviews or starting price on the horizontal axis.',
   '#sc-log': 'Log scale: each step up is ×10, so 5- and 5,000-wikibidou sales are both readable.',
   '#es-rarity': 'Rarity of the card you want to price.',
   '#es-shiny': 'Whether your card is shiny.',
-  '#es-q': 'The q_score of your card (shown in Browse and on the card).',
-  '#es-band': 'How close the q_score must be: 5 means a q of 60 is compared with cards from 55 to 65. Widen it if there are too few matches.',
   '#es-days': 'How far back to look for comparable sales.',
   '#cat-mode': 'How to group cards. Theme: broad subject (actors, footballers, films…). Country: from nationality words ("acteur français" → France). Keyword: each word of the category, with gender/plural merged. Exact category: the raw Wikipedia description; very specific, so most appear only a few times.',
   '#cat-sort': 'Metric to rank groups by. Price index is the fairest price comparison because it ignores rarity mix.',
@@ -478,6 +501,7 @@ const CONTROL_TIPS = {
   '#b-sort': '"most times sold" puts the most-traded cards first, with each card\'s sales grouped together.',
   '#b-min': 'Minimum final price for results, or minimum starting price for new listings.',
   '#card-q': 'Search a card title or paste an exact card ID. Multiple cards can have the same title; select the right physical card.',
+  '#card-sort': 'Choose which all-time card metric ranks the top 500 table. Card search is available in the Cards tab.',
   '#state': 'Collector status. Green = recording normally. Red = needs a login or had errors in the last minute.',
   '#acct': 'Account the collector is logged in as.',
   '#dbsize': 'Auctions with a final result stored, and database size on disk.',
@@ -510,8 +534,8 @@ addEventListener('scroll', hideTip, true);
 const state = {
   tab: 'overview', range: '24h', rarity: new Set(), shiny: '',
   browse: { page: 1, user: null, userName: null, tag: null },
-  card: { id: null, page: 1, query: '' },
-  cat: { mode: 'theme', sort: 'price_index', dir: -1, min: 10, q: '', show: 50 },
+  card: { id: null, page: 1, query: '' }, rankSort: 'sold',
+  cat: { mode: 'theme', sort: 'price_index', dir: -1, min: 10, q: '', show: 50, page: 1 },
 };
 try {
   const s = JSON.parse(localStorage.getItem('ma-filters') || '{}');
@@ -524,17 +548,56 @@ try {
     state.card.id = typeof s.card.id === 'string' ? s.card.id : null;
     state.card.query = typeof s.card.query === 'string' ? s.card.query.slice(0, 120) : '';
   }
+  if (['sold', 'median', 'volume', 'listed'].includes(s.rankSort ?? s.card?.sort)) state.rankSort = s.rankSort ?? s.card.sort;
 } catch {}
 const saveFilters = () => { try { localStorage.setItem('ma-filters', JSON.stringify({ range: state.range, rarity: [...state.rarity], shiny: state.shiny, tab: state.tab, cat: state.cat,
-  card: { id: state.card.id, query: state.card.query } })); } catch {} };
+  card: { id: state.card.id, query: state.card.query }, rankSort: state.rankSort })); } catch {} };
 
 function qs(extra = {}) {
-  const p = { range: state.range, tz: new Date().getTimezoneOffset(), ...extra };
+  const p = { range: state.range, tz: new Date().getTimezoneOffset() };
   if (state.rarity.size) p.rarity = [...state.rarity].join(',');
   if (state.shiny !== '') p.shiny = state.shiny;
+  Object.assign(p, extra);
   return new URLSearchParams(Object.entries(p).filter(([, v]) => v !== '' && v != null)).toString();
 }
-const api = (path, extra) => fetch(`/api/${path}?${qs(extra)}`).then((r) => r.json());
+async function requestJSON(url, { signal, timeout = 60_000, ...options } = {}) {
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  let timedOut = false;
+  if (signal?.aborted) abort();
+  else signal?.addEventListener('abort', abort, { once: true });
+  const timer = setTimeout(() => { timedOut = true; controller.abort(); }, timeout);
+  try {
+    const response = await fetch(url, { ...options, signal: controller.signal });
+    const data = await response.json();
+    if (!response.ok || data?.error) throw new Error(data?.error ?? `Request failed (${response.status})`);
+    return data;
+  } catch (error) {
+    if (timedOut) throw new Error('Loading took too long. Please retry.');
+    throw error;
+  } finally {
+    clearTimeout(timer);
+    signal?.removeEventListener('abort', abort);
+  }
+}
+const api = (path, extra, context) => requestJSON(`/api/${path}?${qs(extra)}`, { signal: context?.controller.signal });
+
+// Each visible view owns its requests. Changing a tab or filter immediately releases
+// the previous requests instead of waiting behind an expensive all-time analysis.
+let activeView = null;
+function viewKey() {
+  const extra = state.tab === 'cards' ? [$('#card-q').value.trim(), state.card.id, state.card.page]
+    : state.tab === 'rankings' ? [state.rankSort]
+    : state.tab === 'browse' ? [state.browse, $('#b-q').value.trim(), $('#b-status').value, $('#b-sort').value, $('#b-min').value]
+    : state.tab === 'players' ? [$('#p-q').value.trim()]
+    : state.tab === 'categories' ? [state.cat.mode, state.cat.min] : [];
+  return JSON.stringify([state.tab, state.tab === 'cards' || state.tab === 'rankings' ? '' : qs(), ...extra]);
+}
+function loadNotice(message, retry = false) {
+  $('#loadNotice').hidden = !message;
+  $('#loadText').textContent = message;
+  $('#loadRetry').hidden = !retry;
+}
 
 // ---------- charts ----------
 const charts = {};
@@ -552,8 +615,15 @@ function baseOpts(extra = {}) {
   };
 }
 function draw(id, type, data, opts) {
-  charts[id]?.destroy();
-  charts[id] = new Chart(document.getElementById(id), { type, data, options: opts ?? baseOpts() });
+  const chart = charts[id];
+  if (chart?.config.type === type) {
+    chart.data = data;
+    chart.options = opts ?? baseOpts();
+    chart.update('none');
+  } else {
+    chart?.destroy();
+    charts[id] = new Chart(document.getElementById(id), { type, data, options: opts ?? baseOpts() });
+  }
 }
 const bar = (label, data, color, extra = {}) => ({ label, data, backgroundColor: color, borderRadius: 4, borderSkipped: 'start', borderWidth: 0, maxBarThickness: 36, ...extra });
 const legend = (el, items) => { $(el).innerHTML = items.map(([n, c]) => `<span class="rar"><i style="background:${c}"></i>${esc(n)}</span>`).join(''); };
@@ -566,19 +636,24 @@ function bucketLabel(t, step) {
 
 // ---------- tables ----------
 function table(el, cols, rows, onRow, empty = 'No data yet for these filters.') {
-  const head = '<tr>' + cols.map((c) => `<th class="${c.l ? 'l' : ''}"><span${tipAttr(c.h, c.t ?? TIPS[c.h])}>${c.h}</span></th>`).join('') + '</tr>';
+  const head = '<tr>' + cols.map((c) => `<th class="${c.l ? 'l' : ''}">${c.sort
+    ? `<button type="button" class="table-sort${c.active ? ' active' : ''}" data-card-sort="${c.sort}" aria-label="Rank by ${esc(c.h)}">${c.h}${c.active ? ' ↓' : ''}</button>`
+    : `<span${tipAttr(c.h, c.t ?? TIPS[c.h])}>${c.h}</span>`}</th>`).join('') + '</tr>';
   const body = rows.length
-    ? rows.map((r, i) => `<tr class="${onRow ? 'click' : ''}" data-i="${i}">` + cols.map((c) => `<td class="${c.l ? 'l' : ''}">${c.f(r)}</td>`).join('') + '</tr>').join('')
+    ? rows.map((r, i) => `<tr class="${onRow ? 'click' : ''}" data-i="${i}">` + cols.map((c) => `<td class="${c.l ? 'l' : ''}">${c.f(r, i)}</td>`).join('') + '</tr>').join('')
     : `<tr><td class="l muted" colspan="${cols.length}">${empty}</td></tr>`;
   const t = $(el);
-  t.innerHTML = '<thead>' + head + '</thead><tbody>' + body + '</tbody>';
-  if (onRow) t.querySelectorAll('tbody tr.click').forEach((tr) => tr.addEventListener('click', (e) => { if (!e.target.closest('a')) onRow(rows[tr.dataset.i]); }));
+  const html = '<thead>' + head + '</thead><tbody>' + body + '</tbody>';
+  if (t._tableHTML !== html) { t.innerHTML = html; t._tableHTML = html; }
+  t.onclick = onRow ? (e) => {
+    const tr = e.target.closest('tbody tr.click');
+    if (tr && !e.target.closest('a, button')) onRow(rows[Number(tr.dataset.i)]);
+  } : null;
 }
 const auctionCols = [
   { h: 'Ended', l: 1, f: (r) => `<span class="muted">${when(r.end_at)}</span>` },
   { h: 'Card', l: 1, f: (r) => `<a class="user" data-card="${esc(r.card_id)}">${esc(r.title)}</a> <span class="muted">${esc(r.category ?? '')}</span>` },
   { h: 'Rarity', l: 1, f: (r) => rar(r.rarity, r.is_shiny) },
-  { h: 'q', f: (r) => fmt(r.q_score, 1) },
   { h: 'Start', f: (r) => fmt(r.base_amount) },
   { h: 'Final', f: (r) => (r.status === 'settled_sold' ? `<b>${fmt(r.final_price)}</b>` : `<span class="muted">${r.status === 'cancelled' ? 'cancelled' : 'unsold'}</span>`) },
   { h: 'Bids', f: (r) => fmt(r.bid_count) },
@@ -597,32 +672,104 @@ const activeCols = [
   { h: 'Seller', l: 1, f: (r) => user(r.seller_id, r.seller) },
 ];
 
+const RANK_LABELS = { sold: 'number traded', median: 'median sale price', volume: 'total traded value', listed: 'auctions ended' };
+const rankingCache = new Map();
+let rankingPending = null, rankingRequest = 0;
+function renderCardRankings(rows) {
+  const sort = state.rankSort;
+  $('#card-ranking-title').textContent = `Top ${fmt(rows.length)} by ${RANK_LABELS[sort]}`;
+  table('#t-card-rankings', [
+    { h: '#', f: (_r, i) => fmt(i + 1) },
+    { h: 'Card', l: 1, f: (r) => `${r.image_url ? `<img class="card-thumb" src="${esc(r.image_url)}" alt="" loading="lazy">` : ''}<b>${esc(r.title ?? '(untitled)')}</b> <span class="muted">${esc(r.category ?? '')}</span>` },
+    { h: 'Rarity', l: 1, f: (r) => rar(r.rarity, r.is_shiny) },
+    { h: 'Sales', sort: 'sold', active: sort === 'sold', f: (r) => fmt(r.times_sold) },
+    { h: 'Auctions ended', sort: 'listed', active: sort === 'listed', f: (r) => fmt(r.times_listed) },
+    { h: 'Median price', sort: 'median', active: sort === 'median', f: (r) => fmt(r.median, 1) },
+    { h: 'Traded value', sort: 'volume', active: sort === 'volume', f: (r) => fmt(r.volume) },
+  ], rows, (r) => selectCard(r.id), 'No completed card auctions recorded yet.');
+}
+function loadCardRankings(force = false) {
+  if (state.tab !== 'rankings') return;
+  const sort = state.rankSort;
+  if (rankingPending?.sort !== sort) rankingPending?.controller.abort();
+  const cached = rankingCache.get(sort);
+  if (!force && cached && Date.now() - cached.at < 300_000) { renderCardRankings(cached.rows); return; }
+  if (rankingPending?.sort === sort && !rankingPending.controller.signal.aborted) return rankingPending.promise;
+  rankingPending?.controller.abort();
+  const controller = new AbortController();
+  const request = ++rankingRequest;
+  $('#card-ranking-title').textContent = `Loading top 500 by ${RANK_LABELS[sort]}…`;
+  const promise = requestJSON('/api/card-rankings?' + new URLSearchParams({ sort }), { signal: controller.signal }).then((rows) => {
+    if (!Array.isArray(rows)) throw new Error(rows?.error ?? 'Could not load card rankings');
+    if (request !== rankingRequest || sort !== state.rankSort || state.tab !== 'rankings') return;
+    rankingCache.set(sort, { rows, at: Date.now() });
+    renderCardRankings(rows);
+  }).catch((e) => {
+    if (e.name === 'AbortError') return;
+    console.error(e);
+    if (request === rankingRequest) $('#card-ranking-title').textContent = 'Could not load card rankings. Try choosing a metric again.';
+  }).finally(() => { if (rankingPending?.promise === promise) rankingPending = null; });
+  rankingPending = { sort, promise, controller };
+  return promise;
+}
+
+let appearancesLoadedAt = 0, appearancesLoadedKey = null, appearancesPending = null, appearancesRequest = 0;
+function loadAuctionAppearances(context) {
+  const key = qs();
+  if (appearancesLoadedKey === key && Date.now() - appearancesLoadedAt < 300_000) return;
+  if (appearancesPending?.key === key && !appearancesPending.context.controller.signal.aborted) return appearancesPending.promise;
+  const request = ++appearancesRequest;
+  charts['c-appearances']?.destroy();
+  delete charts['c-appearances'];
+  $('#appearances-sub').textContent = 'Loading auction appearances…';
+  const promise = api('auction-appearances', {}, context).then((data) => {
+    if (!Array.isArray(data?.rows)) throw new Error(data?.error ?? 'Could not load auction appearances');
+    if (request !== appearancesRequest || !context.current()) return;
+    appearancesLoadedKey = key;
+    appearancesLoadedAt = Date.now();
+    drawAuctionAppearances(data);
+  }).catch((e) => {
+    if (e.name === 'AbortError') return;
+    console.error(e);
+    if (request === appearancesRequest) $('#appearances-sub').textContent = 'Could not load auction appearances.';
+  }).finally(() => { if (appearancesPending?.promise === promise) appearancesPending = null; });
+  appearancesPending = { key, promise, context };
+  return promise;
+}
+
 // ---------- tabs ----------
 const loaders = {
-  async overview() {
-    const [o, latest, turn] = await Promise.all([api('overview'), api('auctions', { page: 1 }), api('turnover')]);
-    drawTurnover(turn);
-    const t = o.totals;
-    $('#tiles').innerHTML = tiles([
-      ['Auctions ended', fmt(t.n), ''],
-      ['Sold', pct(t.sold, t.n), fmt(t.sold) + ' auctions'],
-      ['Volume', fmt(t.volume), 'wikibidous'],
-      ['Avg markup', t.markup ? '×' + fmt(t.markup, 2) : '–', 'final ÷ start'],
-      ['Bids placed', fmt(t.bids), ''],
-      ['Buyers / sellers', fmt(t.buyers) + ' / ' + fmt(t.sellers), 'distinct players'],
+  async overview(context) {
+    const overview = api('overview', {}, context).then((o) => {
+      if (!context.current()) return;
+      const t = o.totals;
+      $('#tiles').innerHTML = tiles([
+        ['Auctions ended', fmt(t.n), ''],
+        ['Sold', pct(t.sold, t.n), fmt(t.sold) + ' auctions'],
+        ['Volume', fmt(t.volume), 'wikibidous'],
+        ['Avg markup', t.markup ? '×' + fmt(t.markup, 2) : '–', 'final ÷ start'],
+        ['Bids placed', fmt(t.bids), ''],
+        ['Buyers / sellers', fmt(t.buyers) + ' / ' + fmt(t.sellers), 'distinct players'],
+      ]);
+      const labels = o.series.map((s) => bucketLabel(s.t, o.step));
+      const sold = css('--s1'), unsold = css('--axis');
+      legend('#lg-ended', [['Sold', sold], ['Unsold', unsold]]);
+      const stacked = baseOpts();
+      stacked.scales.x.stacked = true; stacked.scales.y.stacked = true;
+      draw('c-ended', 'bar', { labels, datasets: [bar('Sold', o.series.map((s) => s.sold), sold), bar('Unsold', o.series.map((s) => s.n - s.sold), unsold, { borderRadius: { topLeft: 4, topRight: 4 }, borderSkipped: false })] }, stacked);
+      draw('c-volume', 'line', { labels, datasets: [{ label: 'Volume', data: o.series.map((s) => s.volume), borderColor: css('--s1'), borderWidth: 2, pointRadius: 0, pointHoverRadius: 4, fill: false, tension: 0.2 }] });
+    });
+    await Promise.all([
+      overview,
+      api('auctions', { page: 1, limit: 15 }, context).then((latest) => { if (context.current()) table('#t-latest', auctionCols, latest.rows, (r) => openAuction(r.id)); }),
+      api('turnover', {}, context).then((turn) => { if (context.current()) drawTurnover(turn); }),
+      loadAuctionAppearances(context),
     ]);
-    const labels = o.series.map((s) => bucketLabel(s.t, o.step));
-    const sold = css('--s1'), unsold = css('--axis');
-    legend('#lg-ended', [['Sold', sold], ['Unsold', unsold]]);
-    const stacked = baseOpts();
-    stacked.scales.x.stacked = true; stacked.scales.y.stacked = true;
-    draw('c-ended', 'bar', { labels, datasets: [bar('Sold', o.series.map((s) => s.sold), sold), bar('Unsold', o.series.map((s) => s.n - s.sold), unsold, { borderRadius: { topLeft: 4, topRight: 4 }, borderSkipped: false })] }, stacked);
-    draw('c-volume', 'line', { labels, datasets: [{ label: 'Volume', data: o.series.map((s) => s.volume), borderColor: css('--s1'), borderWidth: 2, pointRadius: 0, pointHoverRadius: 4, fill: false, tension: 0.2 }] });
-    table('#t-latest', auctionCols, latest.rows.slice(0, 15), (r) => openAuction(r.id));
   },
 
-  async prices() {
-    const p = await api('prices');
+  async prices(context) {
+    const p = await api('prices', {}, context);
+    if (!context.current()) return;
     const g = p.groups;
     table('#t-rarity', [
       { h: 'Rarity', l: 1, f: (r) => rar(r.rarity, r.is_shiny) },
@@ -661,8 +808,6 @@ const loaders = {
     ho.plugins.tooltip.callbacks = { label: (c) => `${c.dataset.label}: ${fmt(c.parsed.y, 1)}% of sales` };
     draw('c-hist', 'line', { labels: edges.slice(lo, hi + 1), datasets: ds }, ho);
 
-    await drawScatter();
-
     table('#t-start', [
       { h: 'Rarity', l: 1, f: (r) => rar(r.rarity) },
       { h: 'Start', l: 1, t: 'Starting-price band set by the seller.', f: (r) => { const i = p.start.edges.indexOf(r.lt); return r.lt ? (i > 0 ? `${p.start.edges[i - 1]}–${r.lt - 1}` : `<${r.lt}`) : `≥${p.start.edges.at(-1)}`; } },
@@ -671,17 +816,20 @@ const loaders = {
       { h: 'Avg price', f: (r) => fmt(r.avg_price, 1) },
       { h: 'Avg bids', f: (r) => fmt(r.avg_bids, 1) },
     ], p.start.rows);
+    await drawScatter(context);
   },
 
-  async categories() {
+  async categories(context) {
     const c = state.cat;
-    const data = await api('category-groups', { mode: c.mode, min: c.min });
+    const data = await api('category-groups', { mode: c.mode, min: c.min }, context);
+    if (!context.current()) return;
     catData = data;
     renderCategories();
   },
 
-  async timing() {
-    const t = await api('timing');
+  async timing(context) {
+    const t = await api('timing', {}, context);
+    if (!context.current()) return;
     const lab = (h) => h.map((b, i) => (b.lt ? (i ? `${secs(h[i - 1].lt)}–${secs(b.lt)}` : `<${secs(b.lt)}`) : `>${secs(h[i - 1].lt)}`));
     const share = (h) => { const tot = h.reduce((s, b) => s + b.n, 0) || 1; return h.map((b) => (100 * b.n) / tot); };
     const po = () => { const o = baseOpts(); o.scales.y.ticks.callback = (v) => v + '%'; o.plugins.tooltip.callbacks = { label: (c) => `${fmt(c.parsed.y, 1)}%` }; return o; };
@@ -704,9 +852,10 @@ const loaders = {
     ], t.durations.filter((d) => d.n));
   },
 
-  async players() {
+  async players(context) {
     const player = $('#p-q').value.trim();
-    const p = await api('players', { player });
+    const p = await api('players', { player }, context);
+    if (!context.current()) return;
     const empty = player ? 'No players match that name in these filters.' : 'No data yet for these filters.';
     table('#t-buyers', [
       { h: 'Player', l: 1, f: (r) => user(r.id, r.username) }, { h: 'Won', f: (r) => fmt(r.won) }, { h: 'Spent', f: (r) => `<b>${fmt(r.spent)}</b>` },
@@ -724,85 +873,117 @@ const loaders = {
     ], p.bidders, null, empty);
   },
 
-  async cards() {
-    const q = $('#card-q').value.trim();
-    const rows = await api('cards', { q });
-    if (state.tab !== 'cards') return;
-    $('#card-results-title').textContent = q ? `Matching cards · ${fmt(rows.length)} shown` : 'Most traded cards';
-    table('#t-card-results', [
-      { h: 'Card', l: 1, f: (r) => `${r.image_url ? `<img class="card-thumb" src="${esc(r.image_url)}" alt="">` : ''}<b>${esc(r.title ?? '(untitled)')}</b> <span class="muted">${esc(r.category ?? '')}</span><br><span class="muted" data-tip="${esc(r.id)}">ID ${esc(r.id.slice(0, 8))}…</span>` },
-      { h: 'Rarity', l: 1, f: (r) => rar(r.rarity, r.is_shiny) },
-      { h: 'q', f: (r) => fmt(r.q_score, 1) },
-      { h: 'Sales / ended', f: (r) => `${fmt(r.times_sold)} / ${fmt(r.times_listed)}` },
-    ], rows, (r) => selectCard(r.id), q.length === 1 ? 'Type at least two characters.' : 'No cards found.');
-    if (!state.card.id) { $('#card-detail').style.display = 'none'; return; }
-    const id = state.card.id, page = state.card.page;
-    const data = await api('card', { id, page });
-    if (state.card.id !== id || state.tab !== 'cards') return;
-    if (data.error) { $('#card-detail').style.display = 'none'; return; }
-    renderCardDetail(data);
+  async cards(context) {
+    await Promise.all([loadCardSearch(context), loadSelectedCard(context)]);
   },
 
-  async browse() {
-    const b = state.browse;
-    const r = await api('auctions', { page: b.page, q: $('#b-q').value.trim(), status: $('#b-status').value, sort: $('#b-sort').value, minPrice: $('#b-min').value, user: b.user, tag: b.tag?.tag, tagKind: b.tag?.kind });
-    table('#t-browse', $('#b-status').value === 'active' ? activeCols : auctionCols, r.rows, (row) => openAuction(row.id));
+  async rankings() {
+    await loadCardRankings();
+  },
+
+  async browse(context) {
+    const b = { ...state.browse }, status = $('#b-status').value;
+    const r = await api('auctions', { page: b.page, q: $('#b-q').value.trim(), status, sort: $('#b-sort').value, minPrice: $('#b-min').value, user: b.user, tag: b.tag?.tag, tagKind: b.tag?.kind }, context);
+    if (!context.current()) return;
+    table('#t-browse', status === 'active' ? activeCols : auctionCols, r.rows, (row) => openAuction(row.id));
     $('#b-page').textContent = 'Page ' + r.page;
     $('#b-prev').disabled = r.page <= 1;
     $('#b-next').disabled = !r.hasMore;
     const u = $('#b-user');
     u.style.display = b.user ? '' : 'none';
     u.innerHTML = b.user ? `player: ${esc(b.userName)} <a class="user" id="b-user-x">✕</a>` : '';
-    $('#b-user-x')?.addEventListener('click', () => { b.user = null; b.page = 1; refresh(); });
+    $('#b-user-x')?.addEventListener('click', () => { state.browse.user = null; state.browse.page = 1; refresh(); });
     const g = $('#b-tag');
     g.style.display = b.tag ? '' : 'none';
     g.innerHTML = b.tag ? `${esc(b.tag.label)} <a class="user" id="b-tag-x">✕</a>` : '';
-    $('#b-tag-x')?.addEventListener('click', () => { b.tag = null; b.page = 1; refresh(); });
+    $('#b-tag-x')?.addEventListener('click', () => { state.browse.tag = null; state.browse.page = 1; refresh(); });
   },
 
-  async collector() {
-    const s = lastStatus ?? (await fetch('/api/status').then((r) => r.json()));
-    const c = s.collector, m = c.last5min, d = s.db;
-    $('#c-tiles').innerHTML = tiles([
-      ['Recorded (5 min)', fmt(m.settled ?? 0), `${fmt(m.sold ?? 0)} sold · ${fmt(m.unsold ?? 0)} unsold`],
-      ['Cancelled (5 min)', fmt(m.cancelled ?? 0), 'terminal, excluded from sales'],
-      ['New listings (5 min)', fmt(m.recentListings ?? 0), 'first seen on the recent feed'],
-      ['Recorded (1 h)', fmt(c.lastHour.settled ?? 0), ''],
-      ['Waiting for result', fmt(c.pending), `${fmt(c.overdue)} due now`],
-      ['Requests (5 min)', fmt(m.requests ?? 0), `${fmt((m.requests ?? 0) / 300, 1)} / s`],
-      ['Errors (5 min)', fmt(m.errors ?? 0), c.slowedDown ? 'slowed down after 429/5xx' : ''],
-      ['Coverage gaps', fmt(c.uncoveredSec) + ' s', 'since start (may have missed auctions)'],
-      ['Database', bytes(d.bytes), `${fmt(d.settled)} settled · ${fmt(d.bids)} bids`],
-      ['Seen on both feeds', fmt(s.ingestion?.overlap ?? 0), 'one auction row per ID'],
-    ]);
-    const labels = c.series.map((p) => new Date(p.t).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }));
-    const st = baseOpts();
-    st.scales.x.stacked = true; st.scales.y.stacked = true;
-    draw('c-activity', 'bar', { labels, datasets: [bar('Sold', c.series.map((p) => p.sold ?? 0), css('--s1')), bar('Unsold', c.series.map((p) => p.unsold ?? 0), css('--axis'), { borderRadius: { topLeft: 4, topRight: 4 }, borderSkipped: false })] }, st);
-    draw('c-reqs', 'line', { labels, datasets: [
-      { label: 'Account 1', data: c.series.map((p) => p.requests_primary ?? 0), borderColor: css('--s1'), borderWidth: 2, pointRadius: 0, pointHoverRadius: 4, tension: 0.2 },
-      { label: 'Account 2', data: c.series.map((p) => p.requests_secondary ?? 0), borderColor: css('--s2'), borderWidth: 2, pointRadius: 0, pointHoverRadius: 4, tension: 0.2 },
-    ] });
-    const ls = c.lastSweep;
-    const lr = c.lastRecentSweep;
-    $('#c-detail').innerHTML = kv([
-      ...s.accounts.map((a, i) => [`Account ${i + 1}`, `${esc(a.username ?? '–')} · ${a.blockedReason ? `<span class="bad">${esc(a.blockedReason)}</span>` : a.needsLogin ? '<span class="bad">needs login</span>' : a.refreshWarning ? `<span class="bad">${esc(a.refreshWarning)}</span>` : a.hasCookie ? a.slowedDown ? 'slowed down' : '<span class="good">active</span>' : 'not added'} · ${fmt(a.requests)} requests`]),
-      ['Running since', when(c.startedAt)],
-      ['Last sweep', ls ? `${ago(ls.at)} · ${ls.pages} page(s) · ${ls.fresh} new · sees ${ls.aheadSec} s ahead · ${ls.ms} ms` : '–'],
-      ['New listings', lr ? `${ago(lr.at)} · ${lr.pages} page(s) · ${lr.fresh} new · ${lr.complete ? 'caught up' : 'catching up'} · ${fmt(c.recentLagSec)} s behind` : 'starting'],
-      ['Distinct listings', `${fmt(s.ingestion?.recent_seen ?? 0)} recent · ${fmt(s.ingestion?.ending_seen ?? 0)} ending soon · ${fmt(s.ingestion?.overlap ?? 0)} seen in both`],
-      ['Identity conflicts', fmt(s.ingestion?.conflicts ?? 0)],
-      ['In flight / queued', `${c.inflight} / ${c.queued}`],
-      ['Last error', c.lastError ? `${esc(c.lastError.message)} <span class="muted">(${ago(c.lastError.at)})</span>` : '<span class="good">none</span>'],
-      ['Request budget', `${s.config.maxRps}/s per account · ending ${s.config.pollMs} ms · recent ${s.config.recentPollMs} ms`],
-      ['Raw JSON kept', s.config.keepRaw ? 'yes' : 'no'],
-      ['Users / cards', `${fmt(d.users)} / ${fmt(d.cards)}`],
-      ['Oldest record', when(d.oldest)],
-    ]);
+  async collector(context) {
+    const s = lastStatus ?? await getStatus();
+    if (!context.current()) return;
+    renderCollector(s);
   },
 };
 
+let cardSearchCache = null;
+async function loadCardSearch(context) {
+  const q = $('#card-q').value.trim();
+  const cached = cardSearchCache?.q === q && Date.now() - cardSearchCache.at < 30_000;
+  const rows = cached ? cardSearchCache.rows
+    : await requestJSON('/api/cards?' + new URLSearchParams({ q }), { signal: context.controller.signal });
+  if (!context.current()) return;
+  if (!cached) cardSearchCache = { q, rows, at: Date.now() };
+  $('#card-results-title').textContent = q ? `Matching cards · ${fmt(rows.length)} shown` : 'Most traded cards';
+  table('#t-card-results', [
+    { h: 'Card', l: 1, f: (r) => `${r.image_url ? `<img class="card-thumb" src="${esc(r.image_url)}" alt="" loading="lazy">` : ''}<b>${esc(r.title ?? '(untitled)')}</b> <span class="muted">${esc(r.category ?? '')}</span><br><span class="muted" data-tip="${esc(r.id)}">ID ${esc(r.id.slice(0, 8))}…</span>` },
+    { h: 'Rarity', l: 1, f: (r) => rar(r.rarity, r.is_shiny) },
+    { h: 'Sales / ended', f: (r) => `${fmt(r.times_sold)} / ${fmt(r.times_listed)}` },
+  ], rows, (r) => selectCard(r.id), q.length === 1 ? 'Type at least two characters.' : 'No cards found.');
+}
+
+async function loadSelectedCard(context) {
+  if (!state.card.id) { $('#card-detail').style.display = 'none'; return; }
+  const id = state.card.id, page = state.card.page;
+  const data = await requestJSON('/api/card?' + new URLSearchParams({ id, page }), { signal: context.controller.signal });
+  if (!context.current()) return;
+  renderCardDetail(data);
+}
+
+function renderCollector(s) {
+  const c = s.collector, m = c.last5min, d = s.db;
+  $('#c-tiles').innerHTML = tiles([
+    ['Recorded (5 min)', fmt(m.settled ?? 0), `${fmt(m.sold ?? 0)} sold · ${fmt(m.unsold ?? 0)} unsold`],
+    ['Cancelled (5 min)', fmt(m.cancelled ?? 0), 'terminal, excluded from sales'],
+    ['New listings (5 min)', fmt(m.recentListings ?? 0), 'first seen on the recent feed'],
+    ['Recorded (1 h)', fmt(c.lastHour.settled ?? 0), ''],
+    ['Waiting for result', fmt(c.pending), `${fmt(c.overdue)} due now`],
+    ['Requests (5 min)', fmt(m.requests ?? 0), `${fmt((m.requests ?? 0) / 300, 1)} / s`],
+    ['Errors (5 min)', fmt(m.errors ?? 0), c.slowedDown ? 'slowed down after 429/5xx' : ''],
+    ['Normal-scan gaps', fmt(c.lastHour.uncoveredSec ?? 0) + ' s', `${fmt(c.uncoveredSec)} s since start · scout may fill these`],
+    ['Database', d ? bytes(d.bytes) : 'Loading totals…', d ? `${fmt(d.settled)} settled · ${fmt(d.bids)} bids` : 'Database statistics are being calculated.'],
+    ['Seen on both feeds', fmt(s.ingestion?.overlap ?? 0), 'one auction row per ID'],
+    ['Scout only', fmt(s.ingestion?.accounts?.scout_only ?? 0), `${fmt(s.ingestion?.accounts?.scout_only_final ?? 0)} with final result · since scout mode began`],
+  ]);
+  const labels = c.series.map((p) => new Date(p.t).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }));
+  const st = baseOpts();
+  st.scales.x.stacked = true; st.scales.y.stacked = true;
+  draw('c-activity', 'bar', { labels, datasets: [bar('Sold', c.series.map((p) => p.sold ?? 0), css('--s1')), bar('Unsold', c.series.map((p) => p.unsold ?? 0), css('--axis'), { borderRadius: { topLeft: 4, topRight: 4 }, borderSkipped: false })] }, st);
+  draw('c-reqs', 'line', { labels, datasets: [
+    { label: 'Account 1', data: c.series.map((p) => p.requests_primary ?? 0), borderColor: css('--s1'), borderWidth: 2, pointRadius: 0, pointHoverRadius: 4, tension: 0.2 },
+    { label: 'Account 2', data: c.series.map((p) => p.requests_secondary ?? 0), borderColor: css('--s2'), borderWidth: 2, pointRadius: 0, pointHoverRadius: 4, tension: 0.2 },
+    { label: 'Account 3', data: c.series.map((p) => p.requests_tertiary ?? 0), borderColor: css('--s3'), borderWidth: 2, pointRadius: 0, pointHoverRadius: 4, tension: 0.2 },
+  ] });
+  const ls = c.lastSweep;
+  const lr = c.lastRecentSweep;
+  const scout = c.scout;
+  $('#c-detail').innerHTML = kv([
+    ...s.accounts.map((a, i) => [`Account ${i + 1}`, `${esc(a.username ?? '–')} · ${a.blockedReason ? `<span class="bad">${esc(a.blockedReason)}</span>` : a.needsLogin ? '<span class="bad">needs login</span>' : a.refreshWarning ? `<span class="bad">${esc(a.refreshWarning)}</span>` : a.hasCookie ? a.slowedDown ? 'slowed down' : '<span class="good">active</span>' : 'not added'} · ${fmt(a.requests)} requests`]),
+    ['Running since', when(c.startedAt)],
+    ['Last sweep', ls ? `${ago(ls.at)} · ${ls.pages} page(s) · ${ls.fresh} new · sees ${ls.aheadSec} s ahead · ${ls.ms} ms` : '–'],
+    ['New listings', lr ? `${ago(lr.at)} · ${lr.pages} page(s) · ${lr.fresh} new · ${lr.complete ? 'caught up' : 'catching up'} · ${fmt(c.recentLagSec)} s behind` : 'starting'],
+    ['Scout', scout?.active ? `${fmt(scout.lastHour.requests ?? 0)} requests in 1 h · ${fmt(scout.recentLagSec)} s recent lag` : 'inactive'],
+    ['Scout quick checks', scout?.lastHeadRecent && scout?.lastHeadEnding ? `recent ${ago(scout.lastHeadRecent.at)} · ending ${ago(scout.lastHeadEnding.at)}` : 'starting'],
+    ['Scout scan gaps', scout?.active ? `${fmt(scout.lastHour.uncoveredSec ?? 0)} s in 1 h` : '–'],
+    ['Scout ending scan', scout?.lastSweep ? `${ago(scout.lastSweep.at)} · ${scout.lastSweep.pages} page(s) · ${scout.lastSweep.fresh} new · sees ${scout.lastSweep.aheadSec} s ahead` : 'starting'],
+    ['Scout recent scan', scout?.lastRecentSweep ? `${ago(scout.lastRecentSweep.at)} · ${scout.lastRecentSweep.pages} page(s) · ${scout.lastRecentSweep.fresh} new · ${scout.lastRecentSweep.complete ? 'caught up' : 'catching up'}` : 'starting'],
+    ['Distinct listings', `${fmt(s.ingestion?.recent_seen ?? 0)} recent · ${fmt(s.ingestion?.ending_seen ?? 0)} ending soon · ${fmt(s.ingestion?.overlap ?? 0)} seen in both`],
+    ['Scout comparison', `${fmt(s.ingestion?.accounts?.scout_only ?? 0)} scout only / ${fmt(s.ingestion?.accounts?.scout_tracked ?? 0)} new since scout mode began`],
+    ['Listings by account', `${fmt(s.ingestion?.accounts?.primary_seen ?? 0)} account 1 · ${fmt(s.ingestion?.accounts?.secondary_seen ?? 0)} account 2 · ${fmt(s.ingestion?.accounts?.tertiary_seen ?? 0)} account 3`],
+    ['Exclusive listings', `${fmt(s.ingestion?.accounts?.primary_only ?? 0)} account 1 · ${fmt(s.ingestion?.accounts?.secondary_only ?? 0)} account 2 · ${fmt(s.ingestion?.accounts?.tertiary_only ?? 0)} account 3`],
+    ['Account 3 overlap', `${fmt(s.ingestion?.accounts?.tertiary_overlap ?? 0)} also seen by account 1 or 2`],
+    ['Identity conflicts', fmt(s.ingestion?.conflicts ?? 0)],
+    ['In flight / queued', `${c.inflight} / ${c.queued}`],
+    ['Last error', c.lastError ? `${esc(c.lastError.message)} <span class="muted">(${ago(c.lastError.at)})</span>` : '<span class="good">none</span>'],
+    ['Request budget', `${s.config.maxRps}/s per account · ending ${s.config.pollMs} ms · recent ${s.config.recentPollMs} ms · scout deep ending ${s.config.scoutPollMs} ms · scout deep recent ${s.config.scoutRecentPollMs} ms · scout quick ${s.config.scoutHeadPollMs} ms`],
+    ['Raw JSON kept', s.config.keepRaw ? 'yes' : 'no'],
+    ['Users / cards', d ? `${fmt(d.users)} / ${fmt(d.cards)}` : 'Loading totals…'],
+    ['Oldest record', d ? when(d.oldest) : 'Loading totals…'],
+  ]);
+}
+
 function selectCard(id) {
+  if (state.card.id !== id) $('#card-detail').style.display = 'none';
   state.card.id = id;
   state.card.page = 1;
   saveFilters();
@@ -832,8 +1013,6 @@ function renderCardDetail(data) {
     ['Total bids', fmt(s.total_bids ?? 0), `${fmt(s.avg_bids, 1)} per completed auction`],
   ]);
   $('#card-details').innerHTML = kv([
-    ['ATK / DEF', `${fmt(c.atk)} / ${fmt(c.def)}`],
-    ['q_score', fmt(c.q_score, 2)],
     ['Pageviews', fmt(c.pageviews)],
     ['Sale range', s.sold ? `${fmt(s.min)} – ${fmt(s.max)}` : '–'],
     ['Recent 5 median', fmt(s.recent_median)],
@@ -904,7 +1083,6 @@ const CAT_COLS = [
   { k: 'one_bid', h: '1-bid sales', s: (r) => r.one_bid, f: (r) => share(r.one_bid) },
   { k: 'snipe', h: 'Late win', s: (r) => r.snipe, f: (r) => share(r.snipe), t: 'Share of sales whose winning bid came within one minute of the final end. Bids in the last 10 seconds of the current timer add one minute.' },
   { k: 'resold', h: 'Resold', s: (r) => r.resold, f: (r) => share(r.resold), t: 'Of the cards that sold, the share that sold again within the range: how much people flip this group.' },
-  { k: 'avg_q', h: 'Avg q', s: (r) => r.avg_q, f: (r) => fmt(r.avg_q, 1), t: 'Average q_score (card quality, 0–100) of the cards in this group.' },
   { k: 'avg_pv', h: 'Avg views', s: (r) => r.avg_pv, f: (r) => fmt(r.avg_pv), t: 'Average Wikipedia pageviews of the articles in this group. Rarer cards come from more viewed articles.' },
   { k: 'high_share', h: 'UR + L', s: (r) => r.high_share, f: (r) => share(r.high_share), t: 'Share of this group\'s auctions that are UR or legendary.' },
   { k: 'mix', h: 'Rarity mix', s: (r) => r.high_share, f: (r) => mixBar(r.mix, r.n), t: 'Rarity breakdown of the auctions in this group, from C (left) to L (right).' },
@@ -938,7 +1116,14 @@ function renderCategories() {
   const c = state.cat;
   const col = CAT_COLS.find((x) => x.k === c.sort) ?? CAT_COLS[1];
   const rows = catRows();
-  const shown = rows.slice(0, c.show);
+  const paged = c.show > 250, pageSize = paged ? 250 : c.show;
+  c.page = Math.max(1, Math.min(Math.ceil(rows.length / pageSize) || 1, c.page || 1));
+  const offset = paged ? (c.page - 1) * pageSize : 0;
+  const shown = rows.slice(offset, offset + pageSize);
+  $('#cat-pages').style.display = paged ? '' : 'none';
+  $('#cat-page').textContent = `Page ${c.page} of ${Math.ceil(rows.length / pageSize) || 1}`;
+  $('#cat-prev').disabled = c.page <= 1;
+  $('#cat-next').disabled = offset + pageSize >= rows.length;
   $('#cat-dir').textContent = c.dir < 0 ? '↓ high first' : '↑ low first';
   $('#cat-sub').textContent = `${fmt(rows.length)} ${CAT_MODES[c.mode].toLowerCase()} groups with at least ${c.min} auctions (showing ${fmt(shown.length)}) · ${fmt(catData.total)} auctions in range · click a header to sort, a row for details`;
   // Table with clickable, sortable headers.
@@ -972,8 +1157,11 @@ function renderCategories() {
   draw('c-cat-bars', 'bar', { labels: top.map((r) => r.label ?? '(none)'), datasets: [bar(barCol.h, top.map(val), css('--s1'), { borderSkipped: 'start', maxBarThickness: 18 })] }, bo);
 
   // Map: sell-through vs price index, dot size by auctions.
-  const pts = rows.filter((r) => r.price_index && r.sell_through != null);
-  const maxN = Math.max(1, ...pts.map((r) => r.n));
+  const allPoints = rows.filter((r) => r.price_index && r.sell_through != null);
+  const pts = allPoints.length > 2000 ? allPoints.sort((a, b) => b.n - a.n).slice(0, 2000) : allPoints;
+  $('#cat-map-sub').textContent = 'Right = sells more often · up = sells for more than its rarity usually does · bigger = more auctions. Click a dot.'
+    + (allPoints.length > pts.length ? ` Showing the ${fmt(pts.length)} largest of ${fmt(allPoints.length)} groups.` : '');
+  const maxN = pts.reduce((max, r) => Math.max(max, r.n), 1);
   const mo = baseOpts({ interaction: { mode: 'nearest', intersect: true } });
   mo.scales.x = { type: 'linear', min: 0, max: 100, title: { display: true, text: 'sold %', color: css('--muted') }, grid: { color: css('--grid') }, ticks: { color: css('--muted'), callback: (v) => v + '%' }, border: { color: css('--axis') } };
   mo.scales.y = { type: 'logarithmic', title: { display: true, text: 'price index (× usual for its rarity)', color: css('--muted') }, grid: { color: css('--grid') }, ticks: { color: css('--muted'), callback: (v) => ([0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50].includes(+v) ? '×' + v : '') }, border: { display: false } };
@@ -984,8 +1172,9 @@ function renderCategories() {
 
 async function openCategory(r) {
   if (!r) return;
-  const c = state.cat;
-  const d = await api('category-detail', { mode: c.mode, g: r.g });
+  const c = { ...state.cat };
+  const d = await loadDialog('/api/category-detail?' + qs({ mode: c.mode, g: r.g }), 'Loading group details…');
+  if (!d) return;
   $('#dlg-content').innerHTML = `
     <div class="dlg-head">
       <div style="flex:1;min-width:0">
@@ -1012,7 +1201,7 @@ async function openCategory(r) {
   ], d.byRarity);
   table('#cd-top', [
     { h: 'Card', l: 1, f: (x) => `${esc(x.title)} <span class="muted">${esc(x.category ?? '')}</span>` },
-    { h: 'Rarity', l: 1, f: (x) => rar(x.rarity, x.is_shiny) }, { h: 'q', f: (x) => fmt(x.q_score, 1) },
+    { h: 'Rarity', l: 1, f: (x) => rar(x.rarity, x.is_shiny) },
     { h: 'Final', f: (x) => `<b>${fmt(x.final_price)}</b>` }, { h: 'Bids', f: (x) => fmt(x.bid_count) },
     { h: 'Winner', l: 1, f: (x) => user(x.winner_id, x.winner) }, { h: 'Ended', l: 1, f: (x) => `<span class="muted">${when(x.end_at)}</span>` },
   ], d.topSales, (x) => openAuction(x.id), 'No sales.');
@@ -1033,18 +1222,24 @@ async function openCategory(r) {
   if (!dlg.open) dlg.showModal();
 }
 
-/** Bars: x = number of recorded sales (0, 1, 2, … with a "10+" tail), y = % of recorded cards. */
-function drawTurnover(turn) {
+/** Distribution of a per-card count, with a 10+ tail and percentage labels. */
+function drawCardCountDistribution(data, { key, first, canvas, subtitle, axis, unit, description }) {
   const CAP = 10;
-  const max = Math.min(CAP, Math.max(1, ...turn.rows.map((r) => r.sold)));
-  const counts = Array.from({ length: max + 1 }, (_, i) => turn.rows.filter((r) => (i === CAP ? r.sold >= CAP : r.sold === i)).reduce((s, r) => s + r.cards, 0));
-  const labels = counts.map((_, i) => (i === CAP ? CAP + '+' : String(i)));
+  const buckets = Array(CAP + 1).fill(0);
+  let max = first;
+  for (const row of data.rows) {
+    const n = Math.min(CAP, Math.max(first, Math.floor(row[key])));
+    buckets[n] += row.cards;
+    max = Math.max(max, n);
+  }
+  const counts = buckets.slice(first, max + 1);
+  const labels = counts.map((_, index) => (index + first === CAP ? CAP + '+' : String(index + first)));
   const o = baseOpts();
   o.scales.y.ticks.callback = (v) => v + '%';
-  o.scales.x.title = { display: true, text: 'times sold', color: css('--muted') };
+  o.scales.x.title = { display: true, text: axis, color: css('--muted') };
   o.plugins.tooltip.callbacks = {
-    title: (c) => `Sold ${c[0].label} time${c[0].label === '1' ? '' : 's'}`,
-    label: (c) => `${fmt(c.parsed.y, 1)}% of cards (${fmt(counts[c.dataIndex])} of ${fmt(turn.total)})`,
+    title: (c) => `${c[0].label} ${unit}${c[0].label === '1' ? '' : 's'}`,
+    label: (c) => `${fmt(c.parsed.y, 1)}% of cards (${fmt(counts[c.dataIndex])} of ${fmt(data.total)})`,
   };
   // Value above each bar: the 3+ bars are a fraction of a percent and would otherwise be invisible.
   const valueLabels = {
@@ -1063,19 +1258,41 @@ function drawTurnover(turn) {
     },
   };
   o.layout = { padding: { top: 18 } };
-  charts['c-turnover']?.destroy();
-  charts['c-turnover'] = new Chart(document.getElementById('c-turnover'), {
+  charts[canvas]?.destroy();
+  charts[canvas] = new Chart(document.getElementById(canvas), {
     type: 'bar',
-    data: { labels, datasets: [bar('Cards', counts.map((n) => (turn.total ? (100 * n) / turn.total : 0)), css('--s1'))] },
+    data: { labels, datasets: [bar('Cards', counts.map((n) => (data.total ? (100 * n) / data.total : 0)), css('--s1'))] },
     options: o,
     plugins: [valueLabels],
   });
-  $('#turnover-sub').textContent = `Share of the ${fmt(turn.total)} cards auctioned in this range, by how many of those auctions sold. 0 = put up but never sold.`;
+  $(subtitle).textContent = description(data.total);
 }
 
-async function drawScatter() {
+function drawTurnover(turn) {
+  drawCardCountDistribution(turn, { key: 'sold', first: 0, canvas: 'c-turnover', subtitle: '#turnover-sub',
+    axis: 'times sold', unit: 'sale', description: (total) => `Share of the ${fmt(total)} cards auctioned in this range, by how many of those auctions sold. 0 = put up but never sold.` });
+}
+
+function drawAuctionAppearances(appearances) {
+  drawCardCountDistribution(appearances, { key: 'auctions_seen', first: 1, canvas: 'c-appearances', subtitle: '#appearances-sub',
+    axis: 'auctions seen', unit: 'auction', description: (total) => `Share of the ${fmt(total)} cards seen in at least one auction first recorded in this range. Includes active, cancelled, sold and unsold auctions.` });
+}
+
+let scatterPending = null;
+async function drawScatter(context = activeView) {
+  if (!context?.current() || state.tab !== 'prices') return;
+  scatterPending?.abort();
+  const controller = new AbortController();
+  scatterPending = controller;
   const r = $('#sc-rarity').value, x = $('#sc-x').value;
-  const pts = await api('scatter', { rarity: r, x });
+  let pts;
+  try {
+    pts = await requestJSON('/api/scatter?' + qs({ rarity: r, x }), { signal: AbortSignal.any([context.controller.signal, controller.signal]) });
+  } catch (error) {
+    if (error.name === 'AbortError') return;
+    throw error;
+  } finally { if (scatterPending === controller) scatterPending = null; }
+  if (!context.current() || controller.signal.aborted || r !== $('#sc-rarity').value || x !== $('#sc-x').value) return;
   const o = baseOpts({ interaction: { mode: 'nearest', intersect: true } });
   o.scales.x = { ...o.scales.x, type: 'linear', title: { display: true, text: $('#sc-x').selectedOptions[0].text, color: css('--muted') }, grid: { color: css('--grid') } };
   o.scales.y = { ...o.scales.y, type: $('#sc-log').checked ? 'logarithmic' : 'linear', title: { display: true, text: 'final price', color: css('--muted') }, beginAtZero: false };
@@ -1084,8 +1301,8 @@ async function drawScatter() {
 }
 
 async function openAuction(id) {
-  const d = await fetch('/api/auction?id=' + encodeURIComponent(id)).then((r) => r.json());
-  if (d.error) return;
+  const d = await loadDialog('/api/auction?id=' + encodeURIComponent(id), 'Loading auction details…');
+  if (!d) return;
   const a = d.auction, c = d.comparable;
   const cols = [{ h: 'When', l: 1, f: (b) => `${when(b.placed_at)} <span class="muted">(${fmt((a.end_at - b.placed_at) / 1000)} s before final end)</span>` }, { h: 'Bidder', l: 1, f: (b) => user(b.bidder_id, b.username) }, { h: 'Amount', f: (b) => fmt(b.amount) }];
   $('#dlg-content').innerHTML = `
@@ -1101,8 +1318,6 @@ async function openAuction(id) {
     </div>
     <div class="dlg-body">
       <div class="kv">${kv([
-        ['ATK / DEF', `${fmt(a.atk)} / ${fmt(a.def)}`],
-        ['q_score', fmt(a.q_score, 2)],
         ['Pageviews', fmt(a.pageviews)],
         ['Start', fmt(a.base_amount) + (a.listing_base_amount !== a.base_amount ? ` <span class="muted">(listed at ${fmt(a.listing_base_amount)})</span>` : '')],
         ['Listed at', when(a.created_at)],
@@ -1111,7 +1326,7 @@ async function openAuction(id) {
         ['Bids / bidders', `${fmt(a.bid_count)} / ${fmt(a.bidder_count)}`],
       ])}</div>
       <div class="kv">${kv([
-        ['Similar cards', `<span class="muted">${esc(a.rarity)}${a.is_shiny ? ' shiny' : ''}, q ±5, 30 d</span>`],
+        ['Similar cards', `<span class="muted">${esc(a.rarity)}${a.is_shiny ? ' shiny' : ''}, 30 d</span>`],
         ['Auctions', `${fmt(c.n)} (${pct(c.sold, c.n)} sold)`],
         ['p25 / median / p75', `${fmt(c.p25)} / <b>${fmt(c.median)}</b> / ${fmt(c.p75)}`],
         ['p10 / p90', `${fmt(c.p10)} / ${fmt(c.p90)}`],
@@ -1128,8 +1343,26 @@ async function openAuction(id) {
   if (!dlg.open) dlg.showModal();
 }
 const dlg = $('#dlg');
+let activeDialog = null;
+async function loadDialog(url, message) {
+  activeDialog?.abort();
+  const controller = new AbortController();
+  activeDialog = controller;
+  $('#dlg-content').innerHTML = `<div class="dlg-head"><span style="flex:1" role="status">${esc(message)}</span><button class="btn ghost" onclick="dlg.close()">Close</button></div>`;
+  hideTip();
+  if (!dlg.open) dlg.showModal();
+  try {
+    const data = await requestJSON(url, { signal: controller.signal });
+    return activeDialog === controller && dlg.open && !controller.signal.aborted ? data : null;
+  } catch (error) {
+    if (error.name !== 'AbortError' && activeDialog === controller && dlg.open) {
+      $('#dlg-content').innerHTML = `<div class="dlg-head"><span style="flex:1" role="status">${esc(error.message)}</span><button class="btn ghost" onclick="dlg.close()">Close</button></div>`;
+    }
+    return null;
+  }
+}
 dlg.addEventListener('click', (e) => { if (e.target === dlg) dlg.close(); });
-dlg.addEventListener('close', hideTip);
+dlg.addEventListener('close', () => { hideTip(); activeDialog?.abort(); activeDialog = null; });
 
 // ---------- wiring ----------
 for (const [id, tip] of Object.entries(CARD_TIPS)) {
@@ -1148,14 +1381,17 @@ function syncFilters() {
 }
 $('#rarity').innerHTML = '<button data-v="">All</button>' + RARITIES.map((r) => `<button data-v="${r}">${r}</button>`).join('');
 for (const sel of ['#sc-rarity', '#es-rarity']) $(sel).innerHTML = RARITIES.map((r) => `<option ${r === 'UR' ? 'selected' : ''}>${r}</option>`).join('');
-$('#range').addEventListener('click', (e) => { const v = e.target.dataset?.v; if (v) { state.range = v; syncFilters(); refresh(); } });
+function refreshFilteredView() { if (state.tab !== 'cards' && state.tab !== 'rankings') refresh(); }
+$('#range').addEventListener('click', (e) => { const v = e.target.dataset?.v; if (v) { state.range = v; syncFilters(); refreshFilteredView(); } });
 $('#rarity').addEventListener('click', (e) => {
   const v = e.target.dataset?.v; if (v === undefined) return;
   if (v === '') state.rarity.clear(); else if (state.rarity.has(v)) state.rarity.delete(v); else state.rarity.add(v);
-  syncFilters(); refresh();
+  syncFilters(); refreshFilteredView();
 });
-$('#shiny').addEventListener('change', (e) => { state.shiny = e.target.value; syncFilters(); refresh(); });
+$('#shiny').addEventListener('change', (e) => { state.shiny = e.target.value; syncFilters(); refreshFilteredView(); });
 function go(tab) {
+  if (!loaders[tab]) tab = 'overview';
+  if (tab !== 'rankings') rankingPending?.controller.abort();
   state.tab = tab; saveFilters();
   document.querySelectorAll('#tabs button').forEach((b) => b.classList.toggle('on', b.dataset.tab === tab));
   document.querySelectorAll('.tab').forEach((s) => s.classList.toggle('on', s.id === 'tab-' + tab));
@@ -1163,6 +1399,19 @@ function go(tab) {
 }
 $('#tabs').addEventListener('click', (e) => e.target.dataset?.tab && go(e.target.dataset.tab));
 $('#card-q').value = state.card.query;
+$('#card-sort').value = state.rankSort;
+function setCardRankSort(sort) {
+  if (!RANK_LABELS[sort]) return;
+  state.rankSort = sort;
+  $('#card-sort').value = sort;
+  saveFilters();
+  if (state.tab === 'rankings') refresh();
+}
+$('#card-sort').addEventListener('change', (e) => setCardRankSort(e.target.value));
+$('#t-card-rankings').addEventListener('click', (e) => {
+  const button = e.target.closest('button[data-card-sort]');
+  if (button) setCardRankSort(button.dataset.cardSort);
+});
 let cardSearchTimer;
 $('#card-q').addEventListener('input', () => {
   clearTimeout(cardSearchTimer);
@@ -1187,11 +1436,14 @@ document.addEventListener('click', (e) => {
   const u = e.target.closest('a.user[data-user]');
   if (u) { dlg.close(); state.browse = { page: 1, user: u.dataset.user, userName: u.dataset.name, tag: null }; go('browse'); }
 });
-['#sc-rarity', '#sc-x', '#sc-log'].forEach((s) => $(s).addEventListener('change', drawScatter));
+['#sc-rarity', '#sc-x', '#sc-log'].forEach((s) => $(s).addEventListener('change', () => {
+  void drawScatter().catch((error) => { if (state.tab === 'prices') loadNotice(error.message, true); });
+}));
 // Categories tab controls: mode and min auctions reload from the server; sort, filter and row count re-render locally.
 $('#cat-sort').innerHTML = CAT_COLS.filter((x) => x.k !== 'mix').map((x) => `<option value="${x.k}">${x.k === 'label' ? 'name' : x.h.toLowerCase()}</option>`).join('');
 function syncCatControls() {
   const c = state.cat;
+  if (!CAT_COLS.some((column) => column.k === c.sort)) c.sort = 'price_index';
   document.querySelectorAll('#cat-mode button').forEach((b) => b.classList.toggle('on', b.dataset.v === c.mode));
   $('#cat-sort').value = c.sort;
   $('#cat-min').value = c.min;
@@ -1207,8 +1459,14 @@ $('#cat-mode').addEventListener('click', (e) => {
 });
 $('#cat-sort').addEventListener('change', (e) => { state.cat.sort = e.target.value; state.cat.dir = e.target.value === 'label' ? 1 : -1; saveFilters(); renderCategories(); });
 $('#cat-dir').addEventListener('click', () => { state.cat.dir = -state.cat.dir; saveFilters(); renderCategories(); });
-$('#cat-show').addEventListener('change', (e) => { state.cat.show = Number(e.target.value); saveFilters(); renderCategories(); });
-$('#cat-q').addEventListener('input', (e) => { state.cat.q = e.target.value; renderCategories(); });
+$('#cat-show').addEventListener('change', (e) => { state.cat.show = Number(e.target.value); state.cat.page = 1; saveFilters(); renderCategories(); });
+$('#cat-prev').addEventListener('click', () => { state.cat.page--; renderCategories(); });
+$('#cat-next').addEventListener('click', () => { state.cat.page++; renderCategories(); });
+let catSearchTimer;
+$('#cat-q').addEventListener('input', (e) => {
+  clearTimeout(catSearchTimer);
+  catSearchTimer = setTimeout(() => { state.cat.q = e.target.value; state.cat.page = 1; renderCategories(); }, 150);
+});
 let catMinTimer;
 $('#cat-min').addEventListener('input', (e) => {
   clearTimeout(catMinTimer);
@@ -1232,14 +1490,21 @@ syncBrowseSort();
 $('#b-prev').addEventListener('click', () => { state.browse.page--; refresh(); });
 $('#b-next').addEventListener('click', () => { state.browse.page++; refresh(); });
 $('#es-go').addEventListener('click', async () => {
-  const p = new URLSearchParams({ rarity: $('#es-rarity').value, shiny: $('#es-shiny').value, q_score: $('#es-q').value, band: $('#es-band').value, days: $('#es-days').value });
-  const c = await fetch('/api/comparable?' + p).then((r) => r.json());
-  $('#es-out').innerHTML = `<span>Auctions</span><span>${fmt(c.n)} (${pct(c.sold, c.n)} sold)</span>
-    <span>Median</span><span><b>${fmt(c.median)}</b></span><span>p25 – p75</span><span>${fmt(c.p25)} – ${fmt(c.p75)}</span>
-    <span>p10 – p90</span><span>${fmt(c.p10)} – ${fmt(c.p90)}</span><span>Range</span><span>${fmt(c.min)} – ${fmt(c.max)}</span>`;
+  const button = $('#es-go');
+  if (button.disabled) return;
+  button.disabled = true;
+  $('#es-out').textContent = 'Calculating…';
+  const p = new URLSearchParams({ rarity: $('#es-rarity').value, shiny: $('#es-shiny').value, days: $('#es-days').value });
+  try {
+    const c = await requestJSON('/api/comparable?' + p);
+    $('#es-out').innerHTML = `<span>Auctions</span><span>${fmt(c.n)} (${pct(c.sold, c.n)} sold)</span>
+      <span>Median</span><span><b>${fmt(c.median)}</b></span><span>p25 – p75</span><span>${fmt(c.p25)} – ${fmt(c.p75)}</span>
+      <span>p10 – p90</span><span>${fmt(c.p10)} – ${fmt(c.p90)}</span><span>Range</span><span>${fmt(c.min)} – ${fmt(c.max)}</span>`;
+  } catch (error) { $('#es-out').textContent = error.message; }
+  finally { button.disabled = false; }
 });
 async function saveCookie(slot) {
-  const suffix = slot === 'secondary' ? '-secondary' : '';
+  const suffix = slot === 'primary' ? '' : '-' + slot;
   const msg = $('#cookie' + suffix + '-msg');
   msg.textContent = 'Checking…'; msg.className = 'muted';
   let r;
@@ -1252,11 +1517,21 @@ async function saveCookie(slot) {
 }
 $('#cookie-save').addEventListener('click', () => saveCookie('primary'));
 $('#cookie-secondary-save').addEventListener('click', () => saveCookie('secondary'));
+$('#cookie-tertiary-save').addEventListener('click', () => saveCookie('tertiary'));
 
-let lastStatus = null;
+let lastStatus = null, statusPending = null;
+function getStatus() {
+  if (statusPending) return statusPending;
+  const promise = requestJSON('/api/status', { timeout: 15_000 }).then((status) => {
+    lastStatus = status;
+    return status;
+  }).finally(() => { if (statusPending === promise) statusPending = null; });
+  statusPending = promise;
+  return promise;
+}
 async function pollStatus() {
   try {
-    lastStatus = await fetch('/api/status').then((r) => r.json());
+    await getStatus();
   } catch { $('#state').className = 'pill bad'; $('#state').textContent = 'collector offline'; return; }
   const c = lastStatus.collector;
   const recent = c.last5min.settled ?? 0;
@@ -1265,25 +1540,49 @@ async function pollStatus() {
   $('#state').className = 'pill ' + (bad ? 'bad' : 'ok');
   $('#state').textContent = c.needsLogin ? 'needs login' : warning ? 'fresh cookie needed soon' : bad ? 'errors: ' + c.lastError.message.slice(0, 60) : `collecting · ${recent} recorded in 5 min`;
   $('#acct').textContent = lastStatus.accounts.filter((a) => a.hasCookie && !a.blockedReason).map((a) => '@' + a.username).join(' + ') || 'no account';
-  $('#dbsize').textContent = `${fmt(lastStatus.db.settled)} auctions · ${bytes(lastStatus.db.bytes)}`;
+  $('#dbsize').textContent = lastStatus.db ? `${fmt(lastStatus.db.settled)} auctions · ${bytes(lastStatus.db.bytes)}` : 'Loading database totals…';
   $('#loginBanner').classList.toggle('on', Boolean(c.needsLogin || warning));
   $('#loginTitle').textContent = c.needsLogin ? 'Login needed.' : 'Fresh cookie needed soon.';
-  $('#loginText').textContent = c.needsLogin ? 'The collector is paused until you paste a cookie.' : `${warning.username ?? warning.slot}: ${warning.refreshWarning}. Collection continues while its access token works.`;
+  $('#loginText').textContent = c.needsLogin ? 'The collector is paused until you paste a cookie.' : warning ? `${warning.username ?? warning.slot}: ${warning.refreshWarning}. Collection continues while its access token works.` : '';
+  if (state.tab === 'collector' && !document.hidden) renderCollector(lastStatus);
 }
 
-let busy = false, again = false;
-async function refresh() {
-  if (busy) { again = true; return; }
-  busy = true;
-  try { await loaders[state.tab](); } catch (e) { console.error(e); } finally { busy = false; }
-  if (again) { again = false; refresh(); }
+async function refresh(automatic = false) {
+  const key = viewKey();
+  if (automatic && activeView?.pending && activeView.key === key && !activeView.controller.signal.aborted) return activeView.promise;
+  if (activeView) {
+    activeView.controller.abort();
+    $('#tab-' + activeView.tab)?.setAttribute('aria-busy', 'false');
+  }
+  const context = { key, tab: state.tab, controller: new AbortController(), pending: true,
+    current() { return activeView === context && !context.controller.signal.aborted && key === viewKey(); } };
+  activeView = context;
+  $('#tab-' + context.tab)?.setAttribute('aria-busy', 'true');
+  loadNotice('Loading…');
+  const promise = (async () => {
+    try {
+      await loaders[context.tab](context);
+      if (context.current()) loadNotice('');
+    } catch (error) {
+      if (error.name !== 'AbortError' && context.current()) { console.error(error); loadNotice(error.message, true); }
+    } finally {
+      context.pending = false;
+      if (activeView === context) $('#tab-' + context.tab)?.setAttribute('aria-busy', 'false');
+    }
+  })();
+  context.promise = promise;
+  return promise;
 }
+$('#loadRetry').addEventListener('click', () => refresh());
 syncFilters();
 go(state.tab);
 pollStatus();
-setInterval(pollStatus, 5000);
-setInterval(() => { if (!document.hidden && !dlg.open) refresh(); }, 20000);
-setInterval(() => { if (state.tab === 'collector' && !document.hidden) loaders.collector(); }, 5000);
+setInterval(() => { if (!document.hidden) pollStatus(); }, 5000);
+setInterval(() => { if (!document.hidden && !dlg.open && state.tab !== 'collector') refresh(true); }, 20000);
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) { activeView?.controller.abort(); rankingPending?.controller.abort(); }
+  else { pollStatus(); refresh(true); }
+});
 </script>
 </body>
 </html>

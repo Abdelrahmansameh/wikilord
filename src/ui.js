@@ -3,10 +3,11 @@ import fs from 'node:fs';
 import { CONFIG_PATH, loadConfig, validate } from './config.js';
 import { Session, cookieLooksRight, normalizeCookieInput } from './http.js';
 import { readCardEvents } from './history.js';
+import { readTargets, readLimits, TARGETS_PATH } from './targets.js';
 
 const PAGE = new URL('./ui.html', import.meta.url);
 
-/** Local-only dashboard. Listens on 127.0.0.1 and rejects cross-site requests. */
+/** Local dashboard. Listens on 127.0.0.1 (LAN access via a port proxy) and rejects cross-site requests. */
 export function startUI({ port, getState, control, log, session, onConnected, getValues = () => ({ cards: [] }), sellCard = async () => ({ ok: false, error: 'not available' }), refreshValues = () => ({ ok: false }), retryPacks = () => ({ ok: false }), refreshValue = async () => ({ ok: false }), recycleCard = async () => ({ ok: false }), getWishlist = () => new Set(), setWishlisted = async () => ({ ok: false, error: 'still starting up' }), getReport = () => ({}), getIds = () => ({}), changeTargets = () => { throw new Error('not available'); }, readJournal = () => [], catalog = async () => ({ cards: [] }), restart = () => ({ ok: false, error: 'not available' }), scanNow = async () => ({ ok: false, error: 'still starting up' }) }) {
   const send = (res, code, body, type = 'application/json') => {
     res.writeHead(code, { 'content-type': type, 'cache-control': 'no-store' });
@@ -22,8 +23,8 @@ export function startUI({ port, getState, control, log, session, onConnected, ge
 
   const server = http.createServer(async (req, res) => {
     try {
-      // Only reachable as localhost, and state-changing calls must come from our own page.
-      if (!/^(127\.0\.0\.1|localhost)(:\d+)?$/.test(req.headers.host ?? '')) return send(res, 403, { error: 'forbidden host' });
+      // Only reachable as localhost or a private LAN IP (blocks DNS rebinding), and state-changing calls must come from our own page.
+      if (!/^(127\.0\.0\.1|localhost|10(\.\d{1,3}){3}|192\.168(\.\d{1,3}){2}|172\.(1[6-9]|2\d|3[01])(\.\d{1,3}){2})(:\d+)?$/.test(req.headers.host ?? '')) return send(res, 403, { error: 'forbidden host' });
       if (req.method !== 'GET') {
         const origin = req.headers.origin;
         if (req.headers['x-bot-ui'] !== '1' || (origin && origin !== `http://${req.headers.host}`)) return send(res, 403, { error: 'forbidden' });
@@ -54,7 +55,9 @@ export function startUI({ port, getState, control, log, session, onConnected, ge
       }
       if (req.method === 'GET' && url.pathname === '/api/cards-history') {
         const q = url.searchParams;
-        const r = readCardEvents({ limit: Math.min(Number(q.get('limit')) || 300, 2000), type: q.get('type') || undefined, q: q.get('q') || undefined });
+        const days = Math.min(365, Math.max(1, Number(q.get('days')) || 7));
+        const r = readCardEvents({ limit: Math.min(Number(q.get('limit')) || 300, 2000), type: q.get('type') || undefined, q: q.get('q') || undefined,
+          ...(q.has('days') ? { sinceMs: Date.now() - days * 86400_000 } : {}) });
         const wl = getWishlist();
         return send(res, 200, { ...r, events: r.events.map((e) => ({ ...e, onWishlist: wl.has(e.cardId) })) });
       }
@@ -67,11 +70,16 @@ export function startUI({ port, getState, control, log, session, onConnected, ge
       if (req.method === 'GET' && url.pathname === '/api/report') return send(res, 200, getReport());
       if (req.method === 'GET' && url.pathname === '/api/ids') return send(res, 200, getIds());
       if (req.method === 'GET' && url.pathname === '/api/journal') return send(res, 200, { entries: readJournal(Math.min(Number(url.searchParams.get('limit')) || 50, 1000)) });
+      const targetsVersion = () => fs.existsSync(TARGETS_PATH) ? fs.statSync(TARGETS_PATH).mtimeMs : 0;
+      if (req.method === 'GET' && url.pathname === '/api/targets') return send(res, 200, { version: targetsVersion(), data: readTargets() });
+      if (req.method === 'GET' && url.pathname === '/api/limits') return send(res, 200, readLimits());
       if (req.method === 'POST' && url.pathname === '/api/targets') {
-        const { ops, by } = JSON.parse((await readBody(req)) || '{}');
+        const { ops, by, version } = JSON.parse((await readBody(req)) || '{}');
         if (!Array.isArray(ops) || !ops.length) return send(res, 400, { error: 'send { ops: [...] }' });
+        if (version !== undefined && version !== targetsVersion()) return send(res, 409, { error: 'Targets changed while this request was being prepared. Read the targets again.' });
         try {
-          return send(res, 200, { ok: true, done: changeTargets(ops, ['agent', 'cli'].includes(by) ? by : 'you') });
+          const done = changeTargets(ops, ['agent', 'cli', 'jarvis'].includes(by) ? by : 'you');
+          return send(res, 200, { ok: true, done, version: targetsVersion(), data: readTargets() });
         } catch (e) {
           return send(res, 400, { ok: false, error: e.message });
         }

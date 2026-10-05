@@ -22,7 +22,8 @@ for (let p = 1; p <= 6; p++) {
   if (!r.json?.auctions?.length) break;
   auctions.push(...r.json.auctions);
 }
-const bids = auctions.map((a) => ({ a, d: decide(cfg, a, cfg.myUserId, wishlist, targets) }));
+const won = wonCardIds();
+const bids = auctions.map((a) => ({ a, d: decide(cfg, a, cfg.myUserId, wishlist, targets, won) }));
 console.log(`AUCTIONS (next ${auctions.length} ending): ${bids.filter((x) => x.d.action === 'bid').length} would be bid on`);
 console.log('  by rule :', tally(bids.filter((x) => x.d.action === 'bid').map((x) => x.d.rule)));
 console.log('  skipped :', tally(bids.filter((x) => x.d.action === 'skip').map((x) => x.d.reason.replace(/: \d+ > max.*/, ': over max'))));
@@ -37,7 +38,6 @@ for (let p = 0; p < 50; p++) {
   if (p === 0) pending = new Set(r.json.pendingTradeCardIds ?? []);
   owned.push(...r.json.collection);
 }
-const won = wonCardIds();
 const bidTitles = bidOnTitles();
 const dec = owned.map((e) => {
   if (pending.has(e.id) || pending.has(e.card_id)) return { e, action: 'keep', rule: 'pending trade (built in)' };

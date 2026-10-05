@@ -1,0 +1,17 @@
+.env
+.env.premium
+.session.json
+.session.premium.json
+config.json
+premium.config.json
+*.pending-settings.json
+*.pending-settings.json.tmp-*
+state.json
+state.json.tmp
+state.premium.json
+state.premium.json.tmp
+events.jsonl
+events.premium.jsonl
+*.log
+market-calibration.cache.json
+market-calibration.cache.json.tmp

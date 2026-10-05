@@ -26,11 +26,25 @@ test('card search and stats isolate a physical card even when titles match', () 
     put('a4', 'card-a', 'cancelled', 1, null, 0, 4);
     put('a5', 'card-a', 'active', 0, null, 0, 5);
     put('b1', 'card-b', 'settled_sold', 1, 999, 1, 6);
+    // A different combat score must not exclude a sale from dashboard benchmarks.
+    store.db.prepare("UPDATE auctions SET q_score = 95 WHERE id = 'b1'").run();
 
     const analysis = new Analysis(store);
     assert.deepEqual(analysis.cards('shared').map((r) => r.id), ['card-a', 'card-b']);
     assert.deepEqual(analysis.cards('card-b').map((r) => r.id), ['card-b']);
     assert.equal(analysis.cards('s').length, 0);
+    assert.deepEqual(analysis.cards('').map((r) => r.id), ['card-a', 'card-b']);
+    assert.deepEqual(analysis.cardRankings('sold').map((r) => r.id), ['card-a', 'card-b']);
+    assert.deepEqual(analysis.cardRankings('listed').map((r) => r.id), ['card-a', 'card-b']);
+    assert.deepEqual(analysis.cardRankings('median').map((r) => [r.id, r.median, r.volume]),
+      [['card-b', 999, 999], ['card-a', 150, 300]]);
+    assert.deepEqual(analysis.cardRankings('volume').map((r) => [r.id, r.median, r.volume]),
+      [['card-b', 999, 999], ['card-a', 150, 300]]);
+    const appearances = analysis.auctionAppearances({ range: 'all' });
+    assert.equal(appearances.total, 2);
+    assert.deepEqual(appearances.rows.map((r) => ({ ...r })),
+      [{ auctions_seen: 1, cards: 1 }, { auctions_seen: 5, cards: 1 }]);
+    assert.deepEqual(analysis.auctionAppearances({ range: 'all', shiny: '1' }), { total: 0, rows: [] });
     assert.equal(analysis.card('missing'), null);
     const result = analysis.card('card-a', '1.9');
     assert.equal(result.history.page, 1);
@@ -42,6 +56,30 @@ test('card search and stats isolate a physical card even when titles match', () 
       last: result.stats.last_sale_price, volume: result.stats.volume, bids: result.stats.total_bids },
       { listings: 5, sold: 2, unsold: 1, cancelled: 1, active: 1, median: 150, last: 200, volume: 300, bids: 5 });
     assert.equal(result.stats.sell_through, 2 / 3);
+    assert.equal(result.comparable.n, 4);
+    assert.equal(result.comparable.sold, 3);
+    assert.equal(result.comparable.median, 200);
+    const auctionBenchmark = analysis.auction('a1').comparable;
+    assert.equal(auctionBenchmark.n, 4);
+    assert.equal(auctionBenchmark.median, 200);
+    // The optional API filter remains compatible for other consumers.
+    assert.equal(analysis.comparable({ rarity: 'R', shiny: 0, q_score: 50 }).sold, 2);
+  } finally {
+    store.db.close();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('card rankings return at most 500 distinct cards', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'market-card-ranking-'));
+  const store = new Store(path.join(dir, 'test.db'));
+  try {
+    const insert = store.db.prepare('INSERT INTO cards (id, title, times_sold, times_listed) VALUES (?, ?, ?, ?)');
+    for (let i = 0; i < 501; i++) insert.run(`card-${i}`, `Card ${i}`, i + 1, i + 1);
+    const rows = new Analysis(store).cardRankings('sold');
+    assert.equal(rows.length, 500);
+    assert.equal(rows[0].times_sold, 501);
+    assert.equal(rows.at(-1).times_sold, 2);
   } finally {
     store.db.close();
     fs.rmSync(dir, { recursive: true, force: true });

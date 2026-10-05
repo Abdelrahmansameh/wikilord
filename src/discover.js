@@ -69,6 +69,9 @@ export async function wikiCategory(name, { depth = 0, limit = 1000 } = {}) {
       const pages = await generatorPages({ generator: 'categorymembers', gcmtitle: cat, gcmtype: d < depth ? 'page|subcat' : 'page', gcmlimit: 'max' }, limit);
       for (const p of pages) {
         if (p.ns === 0) titles.add(p.title);
+        // talk pages: WikiProject rating categories ("Article du projet Montréal d'importance élevée") list the
+        // talk page of each article, which makes them a ready-made relevance ranking
+        else if (p.ns === 1) titles.add(p.title.replace(/^Discussion:/, ''));
         else if (p.ns === 14) next.push(p.title);
       }
       if (titles.size >= limit) break;
@@ -104,6 +107,26 @@ export async function wikiSubcategories(name, { limit = 200 } = {}) {
 
 /* ---------------- the game's card catalog ---------------- */
 
+/** One catalog query, retried a few times when the site's database has a hiccup (5xx, e.g. 525) or is slow. */
+async function db(session, path, ms = 30_000) {
+  for (let attempt = 0; ; attempt++) {
+    let r;
+    try {
+      r = await withTimeout(session.supabase('GET', path), ms, 'card catalog');
+    } catch (e) {
+      if (attempt >= 3) throw e;
+      await sleep(3000 * 2 ** attempt);
+      continue;
+    }
+    if (r.status >= 500 && attempt < 3) {
+      await sleep(3000 * 2 ** attempt);
+      continue;
+    }
+    if (r.status !== 200 || !Array.isArray(r.json)) throw new Error(`card catalog HTTP ${r.status}: ${String(r.text ?? '').replace(/\s+/g, ' ').slice(0, 160)}`);
+    return r.json;
+  }
+}
+
 const card = (c) => ({ cardId: c.id, title: c.wikipedia_title, rarity: c.rarity, pageviews: c.pageviews ?? 0, category: c.category ?? '' });
 
 /** Exact title -> card. Titles the game does not have are listed in `missing`. */
@@ -113,13 +136,8 @@ export async function cardsByTitles(session, titles) {
   const quote = (t) => `"${t.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
   for (let i = 0; i < want.length; i += 30) {
     const batch = want.slice(i, i + 30);
-    const r = await withTimeout(
-      session.supabase('GET', `cards?select=${CARD_FIELDS}&wikipedia_title=in.(${encodeURIComponent(batch.map(quote).join(','))})`),
-      30_000,
-      'card catalog',
-    );
-    if (r.status !== 200 || !Array.isArray(r.json)) throw new Error(`card catalog HTTP ${r.status}: ${r.text?.slice(0, 160)}`);
-    found.push(...r.json.map(card));
+    const rows = await db(session, `cards?select=${CARD_FIELDS}&wikipedia_title=in.(${encodeURIComponent(batch.map(quote).join(','))})`);
+    found.push(...rows.map(card));
     if (i + 30 < want.length) await sleep(400);
   }
   const have = new Set(found.map((c) => c.title));
@@ -130,9 +148,7 @@ export async function cardsByTitles(session, titles) {
 export async function cardsByIds(session, ids) {
   const found = [];
   for (let i = 0; i < ids.length; i += 50) {
-    const r = await withTimeout(session.supabase('GET', `cards?select=${CARD_FIELDS}&id=in.(${ids.slice(i, i + 50).join(',')})`), 30_000, 'card catalog');
-    if (r.status !== 200 || !Array.isArray(r.json)) throw new Error(`card catalog HTTP ${r.status}: ${r.text?.slice(0, 160)}`);
-    found.push(...r.json.map(card));
+    found.push(...(await db(session, `cards?select=${CARD_FIELDS}&id=in.(${ids.slice(i, i + 50).join(',')})`)).map(card));
   }
   return found;
 }
@@ -151,9 +167,7 @@ export async function catalogSearch(session, { text, category, rarity, minPagevi
   if (rar.length) q.push(`rarity=in.(${rar.join(',')})`);
   if (minPageviews) q.push(`pageviews=gte.${Number(minPageviews)}`);
   q.push('order=pageviews.desc', `limit=${Math.min(Number(limit) || 50, 500)}`);
-  const r = await withTimeout(session.supabase('GET', `cards?${q.join('&')}`), 45_000, 'card catalog');
-  if (r.status !== 200 || !Array.isArray(r.json)) throw new Error(`card catalog HTTP ${r.status}: ${r.text?.slice(0, 160)}`);
-  return { cards: r.json.map(card) };
+  return { cards: (await db(session, `cards?${q.join('&')}`, 45_000)).map(card) };
 }
 
 /* ---------------- marketplace ---------------- */

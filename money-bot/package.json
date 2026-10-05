@@ -1,0 +1,14 @@
+{
+  "name": "wikimasters-money-bot",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning src/main.js",
+    "live": "node --disable-warning=ExperimentalWarning src/main.js --live",
+    "live-premium": "node --disable-warning=ExperimentalWarning src/main.js --live-premium",
+    "live-both": "node --disable-warning=ExperimentalWarning src/main.js --live --live-premium",
+    "test": "node --disable-warning=ExperimentalWarning --test"
+  },
+  "engines": { "node": ">=22.13" }
+}

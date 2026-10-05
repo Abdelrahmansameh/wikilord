@@ -12,10 +12,10 @@ export function cardEvent(type, fields = {}) {
   } catch {}
 }
 
-function readAll() {
+function readAll(path = FILE) {
   try {
     return fs
-      .readFileSync(FILE, 'utf8')
+      .readFileSync(path, 'utf8')
       .split('\n')
       .filter(Boolean)
       .map((l) => {
@@ -32,8 +32,8 @@ function readAll() {
 }
 
 /** Ids of cards the bot won at auction (these are never sold or recycled). */
-export function wonCardIds() {
-  return new Set(readAll().filter((e) => e.type === 'won' && e.cardId).map((e) => e.cardId));
+export function wonCardIds(path = FILE) {
+  return new Set(readAll(path).filter((e) => e.type === 'won' && e.cardId).map((e) => e.cardId));
 }
 
 /** Auctions won since `sinceMs` (for the weekly limits and theme budgets): [{ at, price, theme, cardId, title }]. */

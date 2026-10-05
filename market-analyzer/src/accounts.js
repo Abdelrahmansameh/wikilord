@@ -1,4 +1,7 @@
-// One request budget and login state per account. Both feed the same collector and SQLite writer.
+// One request budget and login state per account. All feed the same collector and SQLite writer.
+import { withDeadline } from './deadline.js';
+
+export const ACCOUNT_SLOTS = ['primary', 'secondary', 'tertiary'];
 class Limiter {
   constructor(rps) {
     this.rps = rps;
@@ -52,8 +55,9 @@ class Limiter {
 
 export class AccountPool {
   constructor(sessions, cfg, log) {
+    this.requestTimeoutMs = cfg.requestTimeoutMs ?? 30_000;
     this.accounts = sessions.map((session, i) => ({
-      slot: i ? 'secondary' : 'primary', session, limiter: new Limiter(cfg.maxRps),
+      slot: ACCOUNT_SLOTS[i], session, limiter: new Limiter(cfg.maxRps),
       needsLogin: false, blockedReason: null, inflight: 0, requests: 0, lastError: null,
     }));
     this.log = log;
@@ -62,9 +66,12 @@ export class AccountPool {
   }
 
   checkDistinct() {
-    const [a, b] = this.accounts;
-    b.blockedReason = a.session.userId() && a.session.userId() === b.session.userId()
-      ? 'same player as account 1; use a different account' : null;
+    for (const [i, account] of this.accounts.entries()) {
+      const id = account.session.userId();
+      const earlier = id ? this.accounts.findIndex((other, j) => j < i && other.session.userId() === id) : -1;
+      account.blockedReason = earlier >= 0
+        ? `same player as account ${earlier + 1}; use a different account` : null;
+    }
   }
 
   canUse(a) {
@@ -73,6 +80,10 @@ export class AccountPool {
 
   get activeCount() {
     return this.accounts.filter((a) => this.canUse(a)).length;
+  }
+
+  activeCountFor(slots) {
+    return this.accounts.filter((a) => slots.includes(a.slot) && this.canUse(a)).length;
   }
 
   get waiting() {
@@ -92,29 +103,31 @@ export class AccountPool {
   }
 
   /** Prefer the account with the earliest available request slot; ties alternate. */
-  choose(excluded = new Set()) {
-    const choices = this.accounts.filter((a) => this.canUse(a) && !excluded.has(a.slot));
+  choose(excluded = new Set(), slots = ACCOUNT_SLOTS) {
+    const choices = this.accounts.filter((a) => slots.includes(a.slot) && this.canUse(a) && !excluded.has(a.slot));
     if (!choices.length) return null;
     const rotated = [...choices.slice(this.cursor % choices.length), ...choices.slice(0, this.cursor % choices.length)];
     this.cursor++;
     return rotated.sort((a, b) => a.limiter.delay - b.limiter.delay)[0];
   }
 
-  /** Retry once through the other account on auth failure or server pushback. */
-  async request(path, priority, onRequest = () => {}) {
+  /** Retry through another eligible account on auth failure or server pushback. */
+  async request(path, priority, onRequest = () => {}, slots = ACCOUNT_SLOTS) {
     const tried = new Set();
     let lastError;
     for (;;) {
-      const a = this.choose(tried);
+      const a = this.choose(tried, slots);
       if (!a) throw lastError ?? Object.assign(new Error('no logged-in market account'), { needsLogin: true });
       tried.add(a.slot);
       await a.limiter.take(priority);
       if (!this.canUse(a)) continue;
       a.inflight++;
       a.requests++;
-      onRequest(a.slot);
       try {
-        const r = await a.session.request('GET', path);
+        onRequest(a.slot);
+        // The pool owns the slot: release it even if session refresh, fetch, or the body never settles.
+        const r = await withDeadline((signal) => a.session.request('GET', path, { signal }),
+          this.requestTimeoutMs, { label: `${a.slot} ${path}` });
         const authFailure = r.status === 401 || r.status === 403 || (r.status >= 300 && r.status < 400 && /login/i.test(r.location ?? ''));
         if (authFailure) {
           a.needsLogin = true;

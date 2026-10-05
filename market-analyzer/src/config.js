@@ -10,6 +10,11 @@ const DEFAULTS = {
   maxPagesPerCycle: 25,
   // Recent listings use their own paginated sweep and a persisted completion watermark.
   recentPollMs: 3000,
+  // Account 3 independently checks listing feeds between the normal scans. These are minimum delays
+  // after each completed sweep; a slow response can make the actual interval longer.
+  scoutPollMs: 1000,
+  scoutRecentPollMs: 1000,
+  scoutHeadPollMs: 1000,
   maxRecentPagesPerCycle: 25,
   recentInitialLookbackSec: 120,
   recentOverlapSec: 5,
@@ -17,6 +22,8 @@ const DEFAULTS = {
   // Per-account budget; each login gets an independent limiter.
   maxRps: 15, // ~7 auctions end per second at peak; 8/s could not keep up
   maxInflight: 40,
+  // Hard deadline after the account rate slot is granted, including refresh and response body.
+  requestTimeoutMs: 30_000,
   // Ask for an auction's result this long after it ends, retrying with backoff until it is settled.
   settleDelayMs: 2500,
   // true = also keep each settled auction's full JSON (compressed). Off: the tables hold every field that matters.

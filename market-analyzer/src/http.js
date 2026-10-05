@@ -2,14 +2,15 @@
 // its own .env and .session.json inside market-analyzer/, so the two bots never share a token.
 import fs from 'node:fs';
 import { ROOT } from './config.js';
+import { withDeadline } from './deadline.js';
 
 const BASE = 'https://www.wiki-masters.com';
 const ENV_FILE = new URL('.env', ROOT);
 const accountFiles = (slot) => {
-  if (slot !== 'primary' && slot !== 'secondary') throw new Error('unknown account slot');
+  if (!['primary', 'secondary', 'tertiary'].includes(slot)) throw new Error('unknown account slot');
   return slot === 'primary'
     ? { env: ENV_FILE, session: new URL('.session.json', ROOT) }
-    : { env: new URL('.env.secondary', ROOT), session: new URL('.session.secondary.json', ROOT) };
+    : { env: new URL(`.env.${slot}`, ROOT), session: new URL(`.session.${slot}.json`, ROOT) };
 };
 const UA =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
@@ -189,15 +190,17 @@ export class Session {
     if (left > this.renewWhenLeftSec) return;
     if (this._refreshing) return this._refreshing;
     const log = this.onLog ?? console.log;
-    this._refreshing = (async () => {
+    this._refreshing = withDeadline(async (signal) => {
       const apikey = readEnv('SUPABASE_ANON_KEY');
       if (!apikey) throw new Error('SUPABASE_ANON_KEY missing (it is fetched automatically on start)');
       const res = await fetch(`${SUPABASE}/auth/v1/token?grant_type=refresh_token`, {
         method: 'POST',
         headers: { apikey, 'content-type': 'application/json' },
         body: JSON.stringify({ refresh_token: sess.refresh_token }),
+        signal,
       });
       const j = await res.json().catch(() => ({}));
+      signal.throwIfAborted();
       if (!res.ok || !j.access_token) {
         // A 5xx is the auth server having a moment, not a bad login: keep the current token while it lasts.
         if (res.status >= 500 && left > 90) {
@@ -221,7 +224,7 @@ export class Session {
       this.refreshWarning = null;
       this.renewWhenLeftSec = randomLeftSec();
       log(`session refreshed, valid for ${Math.round(j.expires_in / 60)} min`);
-    })().finally(() => (this._refreshing = null));
+    }, 15_000, { label: `${this.slot} session refresh` }).finally(() => (this._refreshing = null));
     return this._refreshing;
   }
 
@@ -245,8 +248,14 @@ export class Session {
   }
 
   /** GET/POST against the site. Returns { status, json, text, location }. */
-  async request(method, path, { timeoutMs = 15000 } = {}) {
+  async request(method, path, { timeoutMs = 15000, signal } = {}) {
+    return withDeadline((requestSignal) => this._request(method, path, requestSignal),
+      timeoutMs, { signal, label: `${this.slot} ${path}` });
+  }
+
+  async _request(method, path, signal) {
     await this.ensureFresh();
+    signal.throwIfAborted();
     const headers = {
       'user-agent': UA,
       accept: '*/*',
@@ -255,8 +264,10 @@ export class Session {
       referer: `${BASE}/marketplace`,
     };
     if (this.jar.size) headers.cookie = this.cookieHeader();
-    const res = await fetch(BASE + path, { method, headers, redirect: 'manual', signal: AbortSignal.timeout(timeoutMs) });
+    const res = await fetch(BASE + path, { method, headers, redirect: 'manual', signal });
     const text = await res.text();
+    // A late response from an expired attempt must not replace the current cookies.
+    signal.throwIfAborted();
     this.absorb(res);
     let json;
     try {

@@ -38,7 +38,11 @@ test('recent and ending feeds merge atomically; final detail is idempotent', () 
     assert.equal(f.store.db.prepare('SELECT COUNT(*) n FROM bids').get().n, 1);
     assert.deepEqual({ ...f.store.db.prepare('SELECT times_sold, times_listed FROM cards WHERE id = ?').get('card-1') },
       { times_sold: 1, times_listed: 1 });
-    assert.deepEqual({ ...f.store.ingestionInfo() }, { recent_seen: 1, ending_seen: 1, overlap: 1, conflicts: 0 });
+    assert.deepEqual({ ...f.store.ingestionInfo() }, { recent_seen: 1, ending_seen: 1, overlap: 1, conflicts: 0,
+      accounts: { tracked: 0, primary_seen: null, secondary_seen: null, tertiary_seen: null,
+        primary_only: null, secondary_only: null,
+        tertiary_only: null, tertiary_only_final: null, tertiary_overlap: null,
+        scout_tracked: null, scout_only: null, scout_only_final: null } });
   } finally { f.close(); }
 });
 
@@ -127,6 +131,39 @@ test('more than one new page during catch-up leaves no gap', async () => {
   } finally { f.close(); }
 });
 
+test('a head bridge larger than the cycle budget resumes instead of repeating the front forever', async () => {
+  const f = fixture();
+  try {
+    const rows = Array.from({ length: 400 }, (_, i) => listing(`bridge-${i}`, now - i * 1000));
+    f.store.setMeta('recent_watermark_ms', now - 400_000);
+    f.store.setMeta('recent_head_ms', now - 400_000);
+    const pool = { activeCount: 1, waiting: 0, slowedDown: false, status: () => [],
+      async request(url) {
+        const page = Number(new URL(url, 'http://x').searchParams.get('page'));
+        return { status: 200, account: 'primary', json: {
+          auctions: rows.slice((page - 1) * 50, page * 50), hasMore: page * 50 < rows.length,
+        } };
+      } };
+    const cfg = { recentInitialLookbackSec: 120, recentOverlapSec: 5, maxRecentPagesPerCycle: 3,
+      pendingHorizonSec: 120, settleDelayMs: 2500 };
+    let c = new Collector(f.store, pool, cfg, () => {});
+    await c.sweepRecent();
+    assert.equal(c.lastRecentSweep.complete, false);
+    assert.equal(c.recentCursor.page, 4);
+    assert.equal(Number(f.store.getMeta('recent_watermark_ms')), now - 400_000);
+    // New listings arrive while the old gap is being bridged, including across restarts.
+    rows.unshift(...Array.from({ length: 60 }, (_, i) => listing(`bridge-new-${i}`, now + 60_000 - i * 1000)));
+    for (let i = 0; i < 12 && !c.lastRecentSweep.complete; i++) {
+      c = new Collector(f.store, pool, cfg, () => {});
+      await c.sweepRecent();
+    }
+    assert.equal(c.lastRecentSweep.complete, true);
+    assert.equal(f.store.db.prepare('SELECT COUNT(*) n FROM auctions').get().n, 460);
+    assert.equal(c.recentCursor.page, 2);
+    assert.equal(c.recentWatermark, now + 60_000);
+  } finally { f.close(); }
+});
+
 test('temporary missing detail remains pending after many retries', async () => {
   const f = fixture();
   try {
@@ -145,15 +182,78 @@ test('temporary missing detail remains pending after many retries', async () => 
   } finally { f.close(); }
 });
 
-test('distinct accounts both handle requests; duplicate account is blocked', async () => {
+test('three distinct accounts handle requests; every duplicate account is blocked', async () => {
   const mk = (id) => ({ hasCookie: () => true, userId: () => id, username: () => id,
     request: async () => ({ status: 200, json: { auctions: [] } }) });
-  const pool = new AccountPool([mk('one'), mk('two')], { maxRps: 100 }, () => {});
-  const replies = await Promise.all(Array.from({ length: 10 }, () => pool.request('/api/marketplace', 1)));
+  const pool = new AccountPool([mk('one'), mk('two'), mk('three')], { maxRps: 100 }, () => {});
+  const replies = await Promise.all(Array.from({ length: 30 }, () => pool.request('/api/marketplace', 1)));
   assert.ok(replies.some((r) => r.account === 'primary'));
   assert.ok(replies.some((r) => r.account === 'secondary'));
-  const duplicate = new AccountPool([mk('one'), mk('one')], { maxRps: 100 }, () => {});
-  assert.equal(duplicate.activeCount, 1);
+  assert.ok(replies.some((r) => r.account === 'tertiary'));
+  const duplicate = new AccountPool([mk('one'), mk('two'), mk('one')], { maxRps: 100 }, () => {});
+  assert.equal(duplicate.activeCount, 2);
+  assert.match(duplicate.status()[2].blockedReason, /account 1/);
+  const duplicateSecond = new AccountPool([mk('one'), mk('two'), mk('two')], { maxRps: 100 }, () => {});
+  assert.match(duplicateSecond.status()[2].blockedReason, /account 2/);
+});
+
+test('account 3 only counts listings absent from both existing account feeds', () => {
+  const f = fixture();
+  try {
+    const a = listing('third-only');
+    const b = listing('overlap');
+    f.store.saveSnapshots([a, b], 'recent', 'tertiary');
+    f.store.saveSnapshots([b], 'ending', 'secondary');
+    f.store.saveSnapshots([b], 'recent', 'primary');
+    f.store.saveResult(detail(a), false, 'tertiary');
+    let counts = f.store.ingestionInfo().accounts;
+    assert.equal(counts.tracked, 2);
+    assert.equal(counts.tertiary_seen, 2);
+    assert.equal(counts.tertiary_only, 1);
+    assert.equal(counts.tertiary_only_final, null);
+    assert.equal(counts.tertiary_overlap, 1);
+    assert.equal(counts.primary_seen, 1);
+    assert.equal(counts.secondary_seen, 1);
+    assert.equal(counts.primary_only, 0);
+    assert.equal(counts.secondary_only, 0);
+    f.store.saveSnapshots([a], 'ending', 'primary');
+    counts = f.store.ingestionInfo().accounts;
+    assert.equal(counts.tertiary_only, 0);
+    assert.equal(counts.tertiary_overlap, 2);
+  } finally { f.close(); }
+});
+
+test('account comparison includes sightings of older listings after tracking began', () => {
+  const f = fixture();
+  try {
+    const a = listing('historical');
+    f.store.saveSnapshots([a], 'recent');
+    f.store.db.prepare('UPDATE auctions SET first_seen = first_seen - 86400000 WHERE id = ?').run(a.id);
+    f.store.saveSnapshots([a], 'ending', 'tertiary');
+    assert.equal(f.store.ingestionInfo().accounts.tracked, 1);
+    assert.equal(f.store.ingestionInfo().accounts.tertiary_only, 1);
+  } finally { f.close(); }
+});
+
+test('scout comparison counts only listings first recorded after scout mode began', () => {
+  const f = fixture();
+  try {
+    const old = listing('before-scout');
+    f.store.saveSnapshots([old], 'recent', 'tertiary');
+    f.store.db.prepare('UPDATE auctions SET first_seen = first_seen - 1000 WHERE id = ?').run(old.id);
+    f.store.setMeta('scout_mode_started_ms', Date.now() + 1000);
+    const earlier = f.store.ingestionInfo().accounts;
+    assert.equal(earlier.scout_tracked, 0);
+    f.store.setMeta('scout_mode_started_ms', Date.now() - 1);
+    const only = listing('scout-only');
+    const shared = listing('shared');
+    f.store.saveSnapshots([only, shared], 'recent', 'tertiary');
+    f.store.saveSnapshots([shared], 'ending', 'primary');
+    const counts = f.store.ingestionInfo().accounts;
+    assert.equal(counts.scout_tracked, 2);
+    assert.equal(counts.scout_only, 1);
+    assert.equal(counts.scout_only_final, 0);
+  } finally { f.close(); }
 });
 
 test('recent pages get request slots while result backlog is full', async () => {
@@ -178,4 +278,40 @@ test('expired account fails over to the other account without duplicating work',
   assert.equal(response.account, 'secondary');
   assert.equal(pool.status()[0].needsLogin, true);
   assert.equal(pool.activeCount, 1);
+});
+
+test('dedicated scout scans listings while only accounts 1 and 2 fetch results', async () => {
+  const f = fixture();
+  try {
+    const a = listing('scout-found', now, Date.now() - 1000);
+    const paths = [];
+    const mk = (id, slot) => ({ hasCookie: () => true, userId: () => id, username: () => id,
+      async request(_method, url) {
+        paths.push({ slot, url });
+        if (url.startsWith('/api/marketplace?')) return { status: 200, json: { auctions: [a], hasMore: false } };
+        if (slot === 'tertiary') throw new Error('scout fetched an auction result');
+        return { status: 200, json: detail(a) };
+      } });
+    const pool = new AccountPool([mk('one', 'primary'), mk('two', 'secondary'), mk('three', 'tertiary')],
+      { maxRps: 1000 }, () => {});
+    const cfg = { recentInitialLookbackSec: 120, recentOverlapSec: 5, maxRecentPagesPerCycle: 3,
+      maxPagesPerCycle: 3, coverSec: 20, pendingHorizonSec: 120, settleDelayMs: 0, maxInflight: 2 };
+    const normal = new Collector(f.store, pool, cfg, () => {}, { slots: ['primary', 'secondary'] });
+    const scout = new Collector(f.store, pool, cfg, () => {}, { slots: ['tertiary'], listingOnly: true,
+      progressPrefix: 'scout_', onPending: (rows) => normal.schedule(rows) });
+    await scout.sweep();
+    await scout.sweepRecent();
+    await scout.scanHead('recent');
+    await scout.scanHead('ending_soon');
+    assert.ok(paths.every((p) => p.slot === 'tertiary'));
+    assert.ok(scout.lastHeadRecent && scout.lastHeadEnding);
+    assert.ok(normal.pending.has(a.id));
+    assert.equal(scout.pending.size, 0);
+    assert.ok(f.store.getMeta('scout_recent_watermark_ms'));
+    assert.equal(f.store.getMeta('recent_watermark_ms'), null);
+    normal.pending.get(a.id).due = Date.now() - 1;
+    await normal.settle(a.id, normal.pending.get(a.id));
+    assert.equal(paths.at(-1).slot === 'tertiary', false);
+    assert.equal(f.store.db.prepare('SELECT final FROM auctions WHERE id = ?').get(a.id).final, 1);
+  } finally { f.close(); }
 });

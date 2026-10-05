@@ -57,6 +57,12 @@
   pre { margin: 8px 0 0; padding: 10px; background: var(--bg); border-radius: 8px; font: 11.5px/1.45 ui-monospace, Consolas, monospace; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 360px; overflow: auto; }
   svg.spark { display: block; width: 100%; height: 56px; margin-top: 4px; }
   .muted { color: var(--muted); }
+  a.more { display: block; margin-top: 14px; padding: 10px; text-align: center; border: 1px solid var(--line); border-radius: 10px; color: var(--accent); text-decoration: none; font-weight: 600; }
+  .login textarea { width: 100%; min-height: 90px; margin-top: 8px; padding: 8px; font: 12px ui-monospace, Consolas, monospace; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; }
+  .login button { margin-top: 8px; font: inherit; font-weight: 600; background: var(--accent); color: #fff; border: 0; border-radius: 8px; padding: 9px 16px; }
+  .login button:disabled { opacity: .5; }
+  .login .msg { font-size: 14px; margin-top: 8px; }
+  .login p { color: var(--muted); font-size: 13px; margin: 8px 0 0; }
   footer { color: var(--muted); font-size: 12px; text-align: center; padding-top: 4px; }
 </style>
 </head>
@@ -68,8 +74,18 @@
   </header>
   <div id="error" class="alert" hidden></div>
   <section class="card" id="bot"><div class="empty">Loading the trading bot…</div></section>
+  <section class="card login">
+    <details id="loginbox"><summary>Paste a new login cookie for the trading bot</summary>
+      <p>On wiki-masters.com while logged in: F12 → Network → any request to the site → Copy as cURL (bash), or copy just its cookie header. It's checked against the site before the bot uses it.</p>
+      <textarea id="cookie" placeholder="sb-…-auth-token=…" autocomplete="off" autocapitalize="off" spellcheck="false"></textarea>
+      <button id="cookie-save" type="button">Check &amp; connect</button>
+      <div class="msg" id="cookie-msg"></div>
+    </details>
+  </section>
   <section class="card" id="market"><div class="empty">Loading the market analyzer…</div></section>
-  <footer>Read-only view. Refreshes every 5 seconds while open.</footer>
+  <section class="card" id="money"><div class="empty">Loading the money bot…</div></section>
+  <section class="card" id="premium-money"><div class="empty">Loading the premium money account…</div></section>
+  <footer>Read-only except for the login cookie. Refreshes every 5 seconds while open.</footer>
 </main>
 <script src="/app.js"></script>
 </body>

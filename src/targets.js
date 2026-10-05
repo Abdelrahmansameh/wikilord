@@ -78,6 +78,13 @@ export function writeTargets(d, path = TARGETS_PATH) {
   fs.renameSync(tmp, path);
 }
 
+/** Fulfilled targets stay fulfilled after a card is traded away, regardless of theme or enabled status. */
+export function removePurchasedTargets(d, purchasedCardIds) {
+  const removed = d.targets.filter((t) => purchasedCardIds.has(t.cardId));
+  d.targets = d.targets.filter((t) => !purchasedCardIds.has(t.cardId));
+  return removed;
+}
+
 export function readLimits(path = LIMITS_PATH) {
   if (!fs.existsSync(path)) return {};
   let l;
@@ -256,17 +263,27 @@ export function readJournal(limit = 50) {
  * Live copy for the bot: re-reads targets.json and limits.json when they change (checked every few seconds).
  * A broken file keeps the previous good copy and is reported in the log.
  */
-export function watchTargets(log) {
+export function watchTargets(log, purchasedCardIds = new Set()) {
   let data = emptyTargets();
   let limits = {};
   const mtimes = { t: -1, l: -1 };
   const mtime = (p) => (fs.existsSync(p) ? fs.statSync(p).mtimeMs : 0);
-  const check = (first = false) => {
+  const check = (first = false, force = false) => {
     const t = mtime(TARGETS_PATH);
-    if (t !== mtimes.t) {
-      mtimes.t = t;
+    if (force || t !== mtimes.t) {
       try {
-        data = readTargets();
+        const next = readTargets();
+        const removed = removePurchasedTargets(next, purchasedCardIds);
+        if (removed.length) {
+          writeTargets(next);
+          for (const target of removed) {
+            const text = `removed purchased target ${target.title}${target.theme ? ` from ${target.theme}` : ''}`;
+            log(text);
+            journal({ by: 'bot', type: 'change', cardId: target.cardId, text, reason: 'already bought by the bot (lifetime win history)' });
+          }
+        }
+        data = next;
+        mtimes.t = mtime(TARGETS_PATH);
         if (!first || data.targets.length) log(`targets ${first ? 'loaded' : 'reloaded'}: ${data.targets.length} target(s) in ${Object.keys(data.themes).length} theme(s)`);
       } catch (e) {
         log(`targets change IGNORED (previous targets still active): ${e.message}`);
@@ -288,7 +305,7 @@ export function watchTargets(log) {
   return {
     data: () => data,
     limits: () => limits,
-    reload: () => check(),
+    reload: () => check(false, true),
     active: () => activeTargets(data, limits),
     isTarget: (cardId) => data.targets.some((t) => t.cardId === cardId),
   };

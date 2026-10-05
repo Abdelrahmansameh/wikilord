@@ -5,7 +5,7 @@
 //  2. Settle: settleDelayMs after an auction's end, fetch /api/marketplace/:id for the outcome and full bid
 //     history. Still active (not settled yet, or extended by a late bid) -> try again later.
 //
-// Both account sessions share one pending-ID map and one SQLite writer, but each has its own request budget.
+// All account sessions share one pending-ID map and one SQLite writer, but each has its own request budget.
 
 const LIST_PATH = (sort, page) => `/api/marketplace?page=${page}&limit=50&sort=${sort}`;
 
@@ -45,11 +45,15 @@ class Meter {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 export class Collector {
-  constructor(store, pool, cfg, log) {
+  constructor(store, pool, cfg, log, options = {}) {
     this.store = store;
     this.pool = pool;
     this.cfg = cfg;
     this.log = log;
+    this.slots = options.slots ?? null;
+    this.listingOnly = Boolean(options.listingOnly);
+    this.onPending = options.onPending ?? null;
+    this.progressPrefix = options.progressPrefix ?? '';
     this.meter = new Meter();
     this.pending = new Map(); // auction id -> { due, tries }
     this.inflight = 0;
@@ -58,9 +62,14 @@ export class Collector {
     this.uncoveredMs = 0; // time windows a sweep could not reach in time (auctions there may be missed)
     this.lastSweep = null;
     this.lastRecentSweep = null;
-    this.recentWatermark = Number(store.getMeta('recent_watermark_ms')) || Date.now() - cfg.recentInitialLookbackSec * 1000;
-    this.recentHead = Number(store.getMeta('recent_head_ms')) || null;
-    try { this.recentCursor = JSON.parse(store.getMeta('recent_cursor')) || { page: 2, oldest: null }; }
+    this.lastHeadRecent = null;
+    this.lastHeadEnding = null;
+    const initialWatermark = this.progressPrefix
+      ? Math.max(Number(store.getMeta('recent_watermark_ms')) || 0, Date.now() - cfg.recentInitialLookbackSec * 1000)
+      : Date.now() - cfg.recentInitialLookbackSec * 1000;
+    this.recentWatermark = Number(store.getMeta(`${this.progressPrefix}recent_watermark_ms`)) || initialWatermark;
+    this.recentHead = Number(store.getMeta(`${this.progressPrefix}recent_head_ms`)) || null;
+    try { this.recentCursor = JSON.parse(store.getMeta(`${this.progressPrefix}recent_cursor`)) || { page: 2, oldest: null }; }
     catch { this.recentCursor = { page: 2, oldest: null }; }
     if (!Number.isInteger(this.recentCursor.page) || this.recentCursor.page < 2)
       this.recentCursor = { page: 2, oldest: null };
@@ -70,11 +79,17 @@ export class Collector {
   }
 
   start() {
-    this.refreshPending();
-    if (this.pending.size) this.log(`resuming: ${this.pending.size} auctions waiting for their result`);
+    if (!this.listingOnly) {
+      this.refreshPending();
+      if (this.pending.size) this.log(`resuming: ${this.pending.size} auctions waiting for their result`);
+      this.settleTimer = setInterval(() => this.dispatch(), 250);
+    }
     this.sweepLoop();
     this.recentLoop();
-    this.settleTimer = setInterval(() => this.dispatch(), 250);
+    if (this.listingOnly) {
+      this.headLoop('recent');
+      this.headLoop('ending_soon');
+    }
   }
 
   stop() {
@@ -92,7 +107,11 @@ export class Collector {
     return this.pool.request(path, priority, (slot) => {
       this.meter.add('requests');
       this.meter.add(`requests_${slot}`);
-    });
+    }, this.slots ?? undefined);
+  }
+
+  get activeCount() {
+    return this.slots && this.pool.activeCountFor ? this.pool.activeCountFor(this.slots) : this.pool.activeCount;
   }
 
   fail(e) {
@@ -104,7 +123,7 @@ export class Collector {
   async sweepLoop() {
     while (!this.stopped) {
       const t0 = Date.now();
-      if (!this.pool.activeCount) {
+      if (!this.activeCount) {
         await sleep(2000);
         continue;
       }
@@ -118,6 +137,37 @@ export class Collector {
     }
   }
 
+  /** Quick first-page probes continue while the deeper scout sweeps are paging. */
+  async headLoop(sort) {
+    while (!this.stopped) {
+      const t0 = Date.now();
+      if (!this.activeCount) { await sleep(2000); continue; }
+      try { await this.scanHead(sort); }
+      catch (e) { this.fail(e); await sleep(2000); }
+      await sleep(Math.max(0, this.cfg.scoutHeadPollMs - (Date.now() - t0)));
+    }
+  }
+
+  async scanHead(sort) {
+    if (!this.listingOnly) throw new Error('head probe is for listing-only scouts');
+    const start = Date.now();
+    let result;
+    if (sort === 'recent') result = await this.recentPage(1, 0);
+    else if (sort === 'ending_soon') {
+      const r = await this.get(LIST_PATH(sort, 1), 0);
+      if (r.status !== 200 || !Array.isArray(r.json?.auctions)) throw new Error(`marketplace list: HTTP ${r.status}`);
+      result = { list: r.json.auctions, account: r.account };
+    } else throw new Error('unknown listing sort');
+    const saved = this.store.saveSnapshots(result.list, sort === 'recent' ? 'recent' : 'ending', result.account);
+    this.schedule(saved.pending);
+    this.meter.add('discovered', saved.fresh);
+    this.meter.add('headPages');
+    if (saved.conflicts) this.meter.add('conflicts', saved.conflicts);
+    const summary = { at: start, fresh: saved.fresh, ms: Date.now() - start };
+    if (sort === 'recent') this.lastHeadRecent = summary;
+    else this.lastHeadEnding = summary;
+  }
+
   async sweep() {
     const start = Date.now();
     const want = start + this.cfg.coverSec * 1000;
@@ -129,7 +179,7 @@ export class Collector {
       const list = r.json?.auctions;
       if (r.status !== 200 || !Array.isArray(list)) throw new Error(`marketplace list: HTTP ${r.status}`);
       pages++;
-      const saved = this.store.saveSnapshots(list, 'ending');
+      const saved = this.store.saveSnapshots(list, 'ending', r.account);
       this.schedule(saved.pending);
       fresh += saved.fresh;
       if (saved.conflicts) this.meter.add('conflicts', saved.conflicts);
@@ -155,6 +205,10 @@ export class Collector {
   }
 
   schedule(rows) {
+    if (this.listingOnly) {
+      this.onPending?.(rows);
+      return;
+    }
     const horizon = Date.now() + this.cfg.pendingHorizonSec * 1000;
     for (const a of rows) {
       if (a.end_at == null || a.end_at > horizon) continue;
@@ -178,7 +232,7 @@ export class Collector {
   async recentLoop() {
     while (!this.stopped) {
       const t0 = Date.now();
-      if (!this.pool.activeCount) { await sleep(2000); continue; }
+      if (!this.activeCount) { await sleep(2000); continue; }
       try { await this.sweepRecent(); }
       catch (e) { this.fail(e); await sleep(2000); }
       await sleep(Math.max(0, this.cfg.recentPollMs - (Date.now() - t0)));
@@ -194,7 +248,7 @@ export class Collector {
       if (i && Date.parse(list[i].created_at) > Date.parse(list[i - 1].created_at))
         throw new Error('recent listings are not sorted newest first; refusing to advance watermark');
     }
-    return { list, hasMore: Boolean(r.json.hasMore) };
+    return { list, hasMore: Boolean(r.json.hasMore), account: r.account };
   }
 
   /** Page newest-first to the last completed watermark, including overlap across restarts. */
@@ -209,7 +263,7 @@ export class Collector {
     pages++;
     const newest = first.list.length ? Date.parse(first.list[0].created_at) : this.recentWatermark;
     const ingest = (result) => {
-      const saved = this.store.saveSnapshots(result.list, 'recent');
+      const saved = this.store.saveSnapshots(result.list, 'recent', result.account);
       this.schedule(saved.pending);
       fresh += saved.fresh;
       if (saved.conflicts) this.meter.add('conflicts', saved.conflicts);
@@ -227,7 +281,9 @@ export class Collector {
       ingest(lastHeadResult);
       headComplete = !lastHeadResult.hasMore || oldest <= headTarget;
     }
-    if (headComplete) this.recentHead = Math.max(this.recentHead ?? 0, newest);
+    // A bridge can itself exceed one cycle after downtime. Remember its covered front and
+    // continue the remaining gap as a tail; repeating page 1..budget would never catch up.
+    this.recentHead = Math.max(this.recentHead ?? 0, newest);
     let complete = headComplete && (!lastHeadResult.hasMore || oldest <= target);
     let page = Math.max(headPage, this.recentCursor.page - 1);
     let tailPages = 0;
@@ -252,10 +308,11 @@ export class Collector {
     if (complete) {
       this.recentWatermark = Math.max(this.recentWatermark, newest);
       this.recentCursor = { page: 2, oldest: null };
-    } else if (tailPages) this.recentCursor = {
+    } else if (!headComplete) this.recentCursor = { page: headPage, oldest };
+    else if (tailPages) this.recentCursor = {
       page, oldest: Math.min(this.recentCursor.oldest ?? Infinity, oldest),
     };
-    this.store.setRecentProgress(this.recentWatermark, this.recentCursor, this.recentHead ?? 0);
+    this.store.setRecentProgress(this.recentWatermark, this.recentCursor, this.recentHead ?? 0, this.progressPrefix);
     this.meter.add('recentPages', pages);
     this.meter.add('recentListings', fresh);
     this.lastRecentSweep = { at: start, pages, fresh, complete, lagSec: Math.max(0, Math.round((Date.now() - this.recentWatermark) / 1000)),
@@ -263,10 +320,10 @@ export class Collector {
   }
 
   dispatch() {
-    if (!this.pool.activeCount || this.stopped) return;
+    if (this.listingOnly || !this.activeCount || this.stopped) return;
     const now = Date.now();
     if (now - this.lastPendingRefresh > 10_000) this.refreshPending();
-    const room = this.cfg.maxInflight * this.pool.activeCount - this.inflight;
+    const room = this.cfg.maxInflight * this.activeCount - this.inflight;
     if (room <= 0) return;
     const due = [];
     for (const [id, p] of this.pending) if (p.due <= now && !p.busy) due.push([id, p]);
@@ -328,9 +385,24 @@ export class Collector {
     const now = Date.now();
     let overdue = 0;
     for (const p of this.pending.values()) if (p.due <= now) overdue++;
+    const combined = (a, b) => {
+      const out = { ...a };
+      for (const [key, value] of Object.entries(b)) {
+        if (key === 'uncoveredSec') continue; // This measures the normal scan, not a sum of independent scan gaps.
+        out[key] = (out[key] ?? 0) + value;
+      }
+      return out;
+    };
+    const scout = this.scout;
+    const series = this.meter.series();
+    if (scout) {
+      const extra = scout.meter.series();
+      for (let i = 0; i < series.length; i++) series[i] = combined(series[i], Object.fromEntries(
+        Object.entries(extra[i]).filter(([key]) => key !== 't')));
+    }
     return {
       startedAt: this.startedAt,
-      needsLogin: !this.pool.activeCount,
+      needsLogin: !this.activeCount,
       accounts: this.pool.status(),
       lastError: this.lastError,
       lastSweep: this.lastSweep,
@@ -342,9 +414,20 @@ export class Collector {
       queued: this.pool.waiting,
       slowedDown: this.pool.slowedDown,
       uncoveredSec: Math.round(this.uncoveredMs / 1000),
-      last5min: this.meter.sum(5),
-      lastHour: this.meter.sum(60),
-      series: this.meter.series(),
+      last5min: scout ? combined(this.meter.sum(5), scout.meter.sum(5)) : this.meter.sum(5),
+      lastHour: scout ? combined(this.meter.sum(60), scout.meter.sum(60)) : this.meter.sum(60),
+      series,
+      ...(scout ? { scout: {
+        active: Boolean(scout.activeCount),
+        lastSweep: scout.lastSweep,
+        lastRecentSweep: scout.lastRecentSweep,
+        lastHeadRecent: scout.lastHeadRecent,
+        lastHeadEnding: scout.lastHeadEnding,
+        recentLagSec: scout.activeCount ? Math.max(0, Math.round((now - scout.recentWatermark) / 1000)) : null,
+        lastHour: scout.meter.sum(60),
+        last5min: scout.meter.sum(5),
+        lastError: scout.lastError,
+      } } : {}),
     };
   }
 }

@@ -61,6 +61,7 @@ test('worker preserves all dashboard results, combined responses, raw data and m
   for (const [route, method] of queries) {
     assert.deepEqual(await get(`/api/${route}?range=all&tz=240`), plain(direct[method](q)), route);
   }
+  assert.deepEqual(await get('/api/auction-appearances?range=all'), plain(direct.auctionAppearances({ range: 'all' })));
   const group = direct.categoryGroups(q).groups[0];
   assert.ok(group);
   assert.deepEqual(await get(`/api/category-detail?range=all&tz=240&g=${encodeURIComponent(group.g)}`),
@@ -70,6 +71,8 @@ test('worker preserves all dashboard results, combined responses, raw data and m
   for (const [route, expected] of [
     ['/api/auction?id=auction-1', direct.auction('auction-1')],
     ['/api/cards?q=Test', direct.cards('Test')],
+    ['/api/cards?q=', direct.cards('')],
+    ['/api/card-rankings?sort=median', direct.cardRankings('median')],
     ['/api/card?id=card-1&page=1', direct.card('card-1', '1')],
     ['/api/raw?id=auction-1', store.raw('auction-1')],
     ['/api/comparable?rarity=R&shiny=0&q_score=50', direct.comparable({ rarity: 'R', shiny: '0', q_score: '50' })],
@@ -102,13 +105,15 @@ test('worker sees committed WAL writes, coalesces duplicate requests and survive
 
 test('worker exits reject pending calls and the next request starts a healthy replacement', async (t) => {
   const { client } = await fixture(t);
-  const oldWorker = client.worker;
+  const slot = client.slotFor('overview');
+  await slot.run('overview', [{ range: 'all' }]);
+  const oldWorker = slot.worker;
   // These requests wait for the old worker to terminate, so cannot finish before it exits.
-  client.stopping = oldWorker.terminate();
+  slot.stopping = oldWorker.terminate();
   const pending = client.call('overview', { range: 'all' });
   await assert.rejects(pending, /exited/);
   assert.equal((await client.call('overview', { range: 'all' })).totals.n, 1);
-  assert.notStrictEqual(client.worker, oldWorker);
+  assert.notStrictEqual(slot.worker, oldWorker);
   await client.refreshStatus();
   assert.equal(client.status().error, null);
   await client.close();
@@ -128,7 +133,8 @@ test('pending work is bounded and closing rejects requests waiting for dispatch'
 
 test('timeout rejects work and a subsequent request recovers', async (t) => {
   const { client } = await fixture(t);
-  await client.worker.terminate();
+  await client.slotFor('overview').run('overview', [{ range: 'all' }]);
+  await client.slotFor('overview').worker.terminate();
   // A new worker cannot open and read the database within this startup deadline.
   client.timeoutMs = 1;
   await assert.rejects(client.call('overview', { range: 'all' }), /timed out/);

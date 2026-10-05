@@ -233,6 +233,10 @@ function renderDashboard() {
     h('td', {}, p.title ?? p.id.slice(0, 8)), h('td', {}, h('span', { class: 'chip' }, p.rarity ?? '?')), h('td', {}, p.amount), h('td', {}, p.rule),
     h('td', {}, fmtSec(p.fireInSec)), h('td', {}, clock(p.endAt))));
   return h('div', {},
+    s.bidHumanCheck && h('div', { class: 'banner' },
+      h('div', {}, h('b', {}, '⚠ ' + (s.bidHumanCheck.title ?? 'Bids blocked: the site wants a human check')),
+        h('div', { style: 'font-size:12px;opacity:.9;margin-top:2px' },
+          `Complete the human check on WikiMasters in your browser${s.bidHumanCheck.cardTitle ? ` for ${s.bidHumanCheck.cardTitle}` : ''}. The notice clears after a successful bid.`))),
     s.packs?.blocked && h('div', { class: 'banner' },
       h('div', {}, h('b', {}, '⚠ ' + s.packs.blocked.title), h('div', { style: 'font-size:12px;opacity:.9;margin-top:2px' },
         s.packs.blocked.detail + ' Next automatic try: ' + new Date(s.packs.blocked.until).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + '.')),

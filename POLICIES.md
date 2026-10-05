@@ -57,6 +57,9 @@ Specific cards you want, each with its **own max bid** and a **priority** (1 hig
 - **Theme budgets:** a theme's `weeklyBudget` caps what it spends over the last 7 days (auctions won + bids still running). Bids that would go over it are skipped.
 - **Priority reserve:** when money is short, a bid is skipped if it would leave too little for a **higher-priority target whose auction ends within `targets.reserveHorizonHours`** (default 3). Only targets you can afford right now are saved for (a card far above your spendable balance does not block everything else). Bid-rule bids count as lower priority than every target.
 - Targets are **never sold or recycled** automatically.
+- After a confirmed purchase, the card is removed from the targets, including targets without a theme. Lifetime
+  win history prevents buying it again through targets or bid rules, even after trading it away. The bot also
+  clears previously purchased targets on startup and whenever the target list changes.
 - `"targets": { "enabled": false }` in config.json makes the bot ignore the list.
 
 ## Hard limits (`limits.json`)

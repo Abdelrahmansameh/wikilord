@@ -3,6 +3,8 @@
 .session.json
 .env.secondary
 .session.secondary.json
+.env.tertiary
+.session.tertiary.json
 
 # captures and logs
 *.har
@@ -20,6 +22,7 @@ config.pretest.json
 
 node_modules
 .claude
+.codex-remote-attachments/
 
 # targets, hard limits, the agent's journal and your strategy (personal)
 targets.json
@@ -37,3 +40,6 @@ market-analyzer/*.db-wal
 market-analyzer/*.db-shm
 market-analyzer/config.json
 market-analyzer/*.log
+
+# Private money-account archives
+money-bot/archives/

@@ -12,6 +12,7 @@ import {
   auctionsFor, byRarityThenViews, cardsByIds, cardsByTitles, catalogSearch, salesSummary,
   wikiCategory, wikiFindCategories, wikiLinks, wikiSearch, wikiSubcategories,
 } from './discover.js';
+import { idsForTitles, salesFor } from './market-db.js';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const BY = process.env.WM_ACTOR || 'agent';
@@ -117,7 +118,9 @@ FIND CARDS (read-only)
   wiki category <name> [--depth 1] | wiki subcats <name> | wiki links <title> | wiki search <text>
   cards <title or id>...          exact lookup in the game catalog
   market <title or id>...         auctions running now for these cards
-  prices <title or id>...         average sale price per rarity (what the card usually sells for)
+  sales <title or id>... [--days N]   REAL final prices from the market analyzer's database (sold: n, min, p25, median,
+                                  p75, max, last 3; unsold listings; on sale now). Best price source, and free for the site.
+  prices <title or id>...         the site's average sale price per rarity (one site request per card: use sales first)
 
 CHANGE (each change is written to the journal; --reason is recorded)
   target add <id or title> --max N [--priority 1|2|3] [--theme name] [--reason "..."] [--expires 2026-10-15]
@@ -267,6 +270,18 @@ async function main() {
       lines(auctions.sort((a, b) => Date.parse(a.endsAt) - Date.parse(b.endsAt)));
       const none = cards.filter((c) => !found.has(c.cardId));
       if (none.length) console.log(JSON.stringify({ noAuctionNow: none.map((c) => c.title) }));
+      return;
+    }
+
+    case 'sales': {
+      const refs = [sub, ...rest].filter(Boolean);
+      if (!refs.length) throw new Error('sales <title or id>...');
+      const titles = refs.filter((r) => !UUID.test(r));
+      const known = titles.length ? await idsForTitles(titles) : new Map();
+      const unknown = titles.filter((t) => !known.has(t));
+      const ids = [...refs.filter((r) => UUID.test(r)), ...[...known.values()].map((c) => c.id)];
+      if (unknown.length) ids.push(...(await resolveCards(unknown)).map((c) => c.cardId)); // not in the analyzer yet: ask the site
+      for (const r of await salesFor(ids, { days: one('days') ? num('days') : undefined })) console.log(JSON.stringify(r));
       return;
     }
 

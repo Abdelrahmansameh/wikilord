@@ -78,6 +78,7 @@ CREATE INDEX IF NOT EXISTS auctions_seller ON auctions(seller_id, end_at);
 CREATE INDEX IF NOT EXISTS auctions_winner ON auctions(winner_id, end_at);
 CREATE INDEX IF NOT EXISTS auctions_title ON auctions(title COLLATE NOCASE);
 CREATE INDEX IF NOT EXISTS auctions_category ON auctions(category);
+CREATE INDEX IF NOT EXISTS auctions_first_seen ON auctions(first_seen);
 
 CREATE TABLE IF NOT EXISTS ingest_conflicts (
   auction_id TEXT PRIMARY KEY,
@@ -97,8 +98,18 @@ CREATE TABLE IF NOT EXISTS bids (
   amount INTEGER,
   placed_at INTEGER
 );
-CREATE INDEX IF NOT EXISTS bids_auction ON bids(auction_id, placed_at);
+CREATE INDEX IF NOT EXISTS bids_auction ON bids(auction_id, placed_at, bidder_id);
 CREATE INDEX IF NOT EXISTS bids_bidder ON bids(bidder_id, placed_at);
+
+-- Listing-feed sightings by login. Historical rows before this table existed cannot be attributed.
+CREATE TABLE IF NOT EXISTS auction_account_seen (
+  auction_id TEXT NOT NULL,
+  slot TEXT NOT NULL,
+  first_seen INTEGER NOT NULL,
+  last_seen INTEGER NOT NULL,
+  PRIMARY KEY (auction_id, slot)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS auction_account_seen_slot ON auction_account_seen(slot, first_seen);
 
 -- Groupable tags per category string (see categories.js): kind = theme | country | word.
 CREATE TABLE IF NOT EXISTS category_tags (
@@ -124,8 +135,9 @@ const int = (b) => (b == null ? null : b ? 1 : 0);
 const n = (v) => (v === undefined ? null : v);
 
 export class Store {
-  constructor(file) {
+  constructor(file, { log = () => {} } = {}) {
     this.file = file;
+    this.log = log;
     this.db = new DatabaseSync(file);
     this.db.exec(`
       PRAGMA journal_mode = WAL;
@@ -134,18 +146,42 @@ export class Store {
       PRAGMA cache_size = -65536;
       PRAGMA mmap_size = 536870912;
       PRAGMA busy_timeout = 5000;
+      PRAGMA journal_size_limit = 67108864;
+      PRAGMA analysis_limit = 1000;
     `);
     this.db.exec(SCHEMA);
     this.migrate();
+    this.optimize(true);
     this.prepare();
+  }
+
+  /**
+   * Bounded planner statistics. On a fresh connection the 0x10000 bit checks every table, including
+   * indexes just created by a migration; ordinary optimize only considers tables used by this connection.
+   */
+  optimize(initial = false) {
+    if (!this.db.prepare(`SELECT 1 FROM sqlite_master WHERE name = 'sqlite_stat1'`).get()) this.db.exec('ANALYZE');
+    else this.db.exec(initial ? 'PRAGMA optimize = 0x10002' : 'PRAGMA optimize');
   }
 
   /** Columns added after the first release; each runs once on an existing database. */
   migrate() {
+    if (!this.db.prepare(`SELECT 1 FROM meta WHERE key = 'account_tracking_started_ms'`).get())
+      this.db.prepare(`INSERT INTO meta (key, value) VALUES ('account_tracking_started_ms', ?)`).run(String(Date.now()));
     const auctionCols = new Set(this.db.prepare('PRAGMA table_info(auctions)').all().map((c) => c.name));
     if (!auctionCols.has('first_source')) this.db.exec('ALTER TABLE auctions ADD COLUMN first_source TEXT');
     if (!auctionCols.has('seen_recent_at')) this.db.exec('ALTER TABLE auctions ADD COLUMN seen_recent_at INTEGER');
     if (!auctionCols.has('seen_ending_at')) this.db.exec('ALTER TABLE auctions ADD COLUMN seen_ending_at INTEGER');
+    const bidIndexCols = this.db.prepare('PRAGMA index_info(bids_auction)').all().map((column) => column.name);
+    if (bidIndexCols.join(',') !== 'auction_id,placed_at,bidder_id') {
+      const started = Date.now();
+      this.log('database: upgrading bid lookup index for player statistics (one-time migration)');
+      // Replace the old index atomically: player totals can read bidder IDs without random bid-table
+      // fetches, and failed builds retain the previous index. Its ordering still covers bid timing.
+      this.tx(() => this.db.exec(`DROP INDEX bids_auction;
+        CREATE INDEX bids_auction ON bids(auction_id, placed_at, bidder_id)`));
+      this.log(`database: bid lookup index ready in ${((Date.now() - started) / 1000).toFixed(1)}s`);
+    }
     const cols = new Set(this.db.prepare('PRAGMA table_info(cards)').all().map((c) => c.name));
     if (!cols.has('times_sold')) {
       // How often each card has changed hands / been put up, over everything recorded (kept up to date in saveResult).
@@ -157,6 +193,30 @@ export class Store {
           times_listed = (SELECT COUNT(*) FROM auctions a WHERE a.card_id = cards.id AND a.final = 1 AND a.status LIKE 'settled%');
         CREATE INDEX IF NOT EXISTS cards_times_sold ON cards(times_sold);
       `);
+    }
+    this.db.exec('CREATE INDEX IF NOT EXISTS cards_times_listed ON cards(times_listed)');
+    // The Cards tab's default "most traded" list, without sorting every card.
+    this.db.exec('CREATE INDEX IF NOT EXISTS cards_traded ON cards(times_sold DESC, times_listed DESC, title)');
+    this.db.exec(`CREATE INDEX IF NOT EXISTS auctions_sold_card_price ON auctions(card_id, final_price)
+      WHERE final = 1 AND status = 'settled_sold' AND final_price IS NOT NULL`);
+    this.db.exec('CREATE INDEX IF NOT EXISTS auctions_card_seen ON auctions(card_id, first_seen, rarity, is_shiny)');
+    // Read the small analytic fields in end-time order without fetching millions of wide auction rows.
+    // Keeping final as the first key also avoids a bad plan when bounded ANALYZE underestimates the
+    // cardinality of final=1 on auctions_final_end. The partial predicate must match analysis.where().
+    if (!this.db.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'auctions_dashboard'`).get()) {
+      const started = Date.now();
+      this.log('database: building dashboard index (one-time migration; large databases can take a few minutes)');
+      this.db.exec(`CREATE INDEX auctions_dashboard ON auctions(
+        final, end_at, rarity, is_shiny, status, final_price, base_amount, bid_count, bidder_count,
+        seller_id, winner_id, card_id, q_score, id, created_at, last_bid_at, category, pageviews, atk, def
+      ) WHERE final = 1 AND status IN ('settled_sold', 'settled_unsold')`);
+      this.log(`database: dashboard index ready in ${((Date.now() - started) / 1000).toFixed(1)}s`);
+    }
+    if (!this.db.prepare(`SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'auctions_feed_seen'`).get()) {
+      const started = Date.now();
+      this.log('database: building feed diagnostics index (one-time migration)');
+      this.db.exec('CREATE INDEX auctions_feed_seen ON auctions(seen_recent_at, seen_ending_at)');
+      this.log(`database: feed diagnostics index ready in ${((Date.now() - started) / 1000).toFixed(1)}s`);
     }
     // (Re)tag every category when the tagging rules changed (or on first run).
     const v = this.db.prepare(`SELECT value FROM meta WHERE key = 'tags_version'`).get()?.value;
@@ -233,6 +293,9 @@ export class Store {
           detail_tries = auctions.detail_tries + 1, final = 1
         WHERE auctions.final = 0 OR auctions.status NOT IN ('settled_sold', 'settled_unsold', 'cancelled')`),
       bid: d.prepare(`INSERT OR IGNORE INTO bids (id, auction_id, bidder_id, amount, placed_at) VALUES ($id, $auction_id, $bidder_id, $amount, $placed_at)`),
+      accountSeen: d.prepare(`INSERT INTO auction_account_seen (auction_id, slot, first_seen, last_seen)
+        VALUES ($id, $slot, $now, $now)
+        ON CONFLICT(auction_id, slot) DO UPDATE SET last_seen = excluded.last_seen`),
       // Recounted rather than incremented, so storing the same result twice can never inflate it.
       cardCounts: d.prepare(`
         UPDATE cards SET
@@ -331,7 +394,7 @@ export class Store {
   }
 
   /** One transaction per list page. The global auction ID is the only record key across accounts and feeds. */
-  saveSnapshots(list, source = 'ending') {
+  saveSnapshots(list, source = 'ending', account = null) {
     if (source !== 'ending' && source !== 'recent') throw new Error('unknown listing source');
     const now = Date.now();
     return this.tx(() => {
@@ -353,6 +416,7 @@ export class Store {
         this._tagCategory(a.card?.category);
         this.s.snapshot.run({ ...row, source, seen_recent_at: source === 'recent' ? now : null,
           seen_ending_at: source === 'ending' ? now : null });
+        if (account) this.s.accountSeen.run({ id: a.id, slot: account, now });
         if (!existing || !existing.final) result.pending.push({ id: a.id, end_at: row.end_at, status: a.status });
       }
       return result;
@@ -428,20 +492,50 @@ export class Store {
     this.s.metaSet.run(key, String(value));
   }
 
-  setRecentProgress(watermark, cursor, head) {
+  setRecentProgress(watermark, cursor, head, prefix = '') {
     this.tx(() => {
-      this.s.metaSet.run('recent_watermark_ms', String(watermark));
-      this.s.metaSet.run('recent_cursor', JSON.stringify(cursor));
-      this.s.metaSet.run('recent_head_ms', String(head));
+      this.s.metaSet.run(`${prefix}recent_watermark_ms`, String(watermark));
+      this.s.metaSet.run(`${prefix}recent_cursor`, JSON.stringify(cursor));
+      this.s.metaSet.run(`${prefix}recent_head_ms`, String(head));
     });
   }
 
-  ingestionInfo() {
-    return this.db.prepare(`SELECT
-      (SELECT COUNT(*) FROM auctions WHERE seen_recent_at IS NOT NULL) recent_seen,
-      (SELECT COUNT(*) FROM auctions WHERE seen_ending_at IS NOT NULL) ending_seen,
-      (SELECT COUNT(*) FROM auctions WHERE seen_recent_at IS NOT NULL AND seen_ending_at IS NOT NULL) overlap,
-      (SELECT COUNT(*) FROM ingest_conflicts) conflicts`).get();
+  ingestionInfo(cacheMs = 0) {
+    const now = Date.now();
+    if (!cacheMs || !this._accountInfoCache || now - this._accountInfoCache.at >= cacheMs) {
+      const feeds = this.db.prepare(`SELECT
+        COALESCE(SUM(seen_recent_at IS NOT NULL), 0) recent_seen,
+        COALESCE(SUM(seen_ending_at IS NOT NULL), 0) ending_seen,
+        COALESCE(SUM(seen_recent_at IS NOT NULL AND seen_ending_at IS NOT NULL), 0) overlap,
+        (SELECT COUNT(*) FROM ingest_conflicts) conflicts FROM auctions`).get();
+      const scoutStart = Number(this.db.prepare(`SELECT value FROM meta WHERE key = 'scout_mode_started_ms'`).get()?.value);
+      // Stream sightings in primary-key order once. The join predicates skip auction metadata seeks for
+      // overlapping accounts and old sightings before looking up the few exclusive scout candidates.
+      const historical = this.db.prepare(`SELECT
+        COUNT(*) tracked,
+        SUM((mask & 1) != 0) primary_seen,
+        SUM((mask & 2) != 0) secondary_seen,
+        SUM((mask & 4) != 0) tertiary_seen,
+        SUM(mask = 1) primary_only,
+        SUM(mask = 2) secondary_only,
+        SUM(mask = 4) tertiary_only,
+        NULL tertiary_only_final,
+        SUM((mask & 4) != 0 AND (mask & 3) != 0) tertiary_overlap,
+        ${scoutStart ? `COALESCE(SUM(a.id IS NOT NULL), 0) scout_only,
+          COALESCE(SUM(a.id IS NOT NULL AND a.final = 1), 0) scout_only_final` :
+          'NULL scout_only, NULL scout_only_final'}
+        FROM (
+          SELECT auction_id,
+            SUM(CASE slot WHEN 'primary' THEN 1 WHEN 'secondary' THEN 2 WHEN 'tertiary' THEN 4 ELSE 0 END) mask,
+            MIN(CASE WHEN slot = 'tertiary' THEN first_seen END) tertiary_first
+          FROM auction_account_seen GROUP BY auction_id
+        ) g ${scoutStart ? `LEFT JOIN auctions a ON a.id = CASE
+          WHEN g.mask = 4 AND g.tertiary_first >= ? THEN g.auction_id END
+          AND a.first_seen >= ?` : ''}`).get(...(scoutStart ? [scoutStart, scoutStart] : []));
+      const scoutTracked = scoutStart ? this.db.prepare('SELECT COUNT(*) n FROM auctions WHERE first_seen >= ?').get(scoutStart).n : null;
+      this._accountInfoCache = { at: now, value: { ...feeds, accounts: { ...historical, scout_tracked: scoutTracked } } };
+    }
+    return this._accountInfoCache.value;
   }
 
   /** Decompressed raw JSON for one auction, or null. */

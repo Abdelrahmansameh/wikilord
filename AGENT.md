@@ -47,11 +47,16 @@ If a limit blocks the strategy, say so in the journal: the owner decides.
    Use your own knowledge: how central, iconic or historically important is this to the theme, as the owner
    describes it? Skip homonym pages, lists, minor spin-offs, and articles only loosely tied to the theme, unless the
    strategy wants completeness. A well-known classic at SR can deserve priority 1 over a trending UR.
-6. **Price.** Before setting max bids, check what cards really cost: `prices <ids>` (average sale price at each
-   rarity) and `market <ids>` (auctions running now). Do this for the cards you are about to add (at most ~40 per run:
-   each lookup is a request to the site). `history --type lost` shows what auctions you lost went for.
-   - Set `maxBid` from the average price and the priority: about 0.8–1.0× the average for priority 1, less for lower
-     priorities. Never more than the theme can afford in a week.
+6. **Price.** Before setting max bids, check what cards really cost. Start with `sales <ids or titles>`: real final
+   prices from the market analyzer's database (every auction it saw end: n, min, p25, median, p75, max, the last 3;
+   how many listings went unsold and at what start price; what is on sale right now). It is read locally, so it costs
+   the site nothing: use it for as many cards as you like. Many cards have few or no recorded sales; then fall back to
+   `prices <ids>` (the site's average per rarity; one site request per card, at most ~30 per run, it starts refusing
+   with 403 after that) and judge from similar cards. `history --type lost` shows what auctions you lost went for.
+   Prices differ by rarity and shiny (a UR copy of an SR card can cost 10x more): price for the card's own rarity.
+   - Set `maxBid` from the real prices and the priority: around the median (up to p75) for priority 1, around the
+     median or below for priority 2, near p25 / "only if cheap" for priority 3. For cheap cards (under ~20), pay a few
+     coins over the median to actually win them. Never more than the theme can afford in a week.
    - Popular cards can cost far more than the budget (for example SR video-game classics around 1000+). Do not fill the
      list with targets that can never be won. Keep them at priority 3 with a realistic max (sometimes an auction
      closes cheap), or leave them out and note them in the journal.
@@ -59,8 +64,8 @@ If a limit blocks the strategy, say so in the journal: the owner decides.
    `target import tmp/<theme>.json --reason "<why>"`. Give every target a short, specific reason
    (e.g. "founding SNES classic, avg 240").
 8. **Review** existing targets: raise or lower max bids from what auctions really went for (`history --type lost`,
-   `status` → `last7days`), drop ones that no longer fit, let expired ones go. Won cards stay on the list (they are
-   protected from being sold or recycled because they are targets).
+   `status` → `last7days`), drop ones that no longer fit, let expired ones go. The bot removes a target from its
+   theme automatically after winning it; won cards remain protected from being sold or recycled by their win history.
 9. **Journal** the run: `journal add --type run "<what you saw, what you changed, what you plan next>"`. Keep it
    short and concrete. The next run starts from this, and the owner reads it on the dashboard (Targets tab).
 
